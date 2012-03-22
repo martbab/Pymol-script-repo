@@ -583,7 +583,8 @@ class CSTVizGUI:
         #
         #####################################################################
         self.__appTitle = 'NMR Shielding Tensors visualization plugin'
-        self.__topLabelText = "(c) 2012 Martin Babinsky: martbab (at) chemi (dot) muni (dot) cz"
+        self.__topLabelText = "(c) 2012 Martin Babinsky: \
+                martbab (at) chemi (dot) muni (dot) cz"
         self.__top = Pmw.Dialog(self.__parent,
             buttons = (self.__redrawText, self.__exitText),
             command = self.execute
@@ -629,7 +630,6 @@ class CSTVizGUI:
             row = 1,
             sticky = "nsew"
         )
-        print self.__noteBook.grid_info()
 
         self.__top.interior().grid_columnconfigure(0,
             weight = 1
@@ -911,7 +911,9 @@ class CSTVizGUI:
             command = self.clearAllCSTs,
         )
         ###########################
-        self.__fileContentsListBox.component("listbox").bind("<Button-3>", self.cstMenu)
+        self.__fileContentsListBox.component("listbox").bind("<Button-3>", 
+            self.cstMenu
+        )
 
     def __fileContentsButtonsGroup(self, parent):
         self.__graphicalSettingsButton = Tkinter.Button( parent,
@@ -924,7 +926,7 @@ class CSTVizGUI:
             column = 0,
             sticky = 'ew'
         )
-        self.__showInfoButton = Tkinter.Button(
+        self.__showInfoButton = Tkinter.Button( parent,
             text = "Show info",
         )
         self.__showInfoButton.grid(
@@ -1207,7 +1209,6 @@ class CSTVizGUI:
                 self.__fileList[filename][i].drawCGOObject()
 
     def exit(self, event = None):
-        self.__parent.focus_set()
         self.__top.destroy()
 
 
