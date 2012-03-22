@@ -1,16 +1,59 @@
-#!/usr/bin/env python
-# Set of classes and a PyMol script for vizualization of NMR shielding tensors
-# computed by Gaussian suite of programs
-# version 0.5
-# (c) Martin Babinsky, 2012
-# TODO: finish the documentation and rewrite the code
+'''
+---CSTViz Magnetic shielding tensor visualization plugin for PyMOL---
 
+Author: Martin Babinsky <martbab@chemi.muni.cz>
+Date: March 2012
+
+------
+
+TODO: 
+    1.) Fix the weird issue with PyMOL main window freezing when switching 
+        desktops on Unix system
+
+    2.) Make the plugin load the molecular geometry along the CST data directly 
+        from the Gaussian ouput file.
+
+    3.) enable the coloring of pseudoatoms by their corresponding components
+        currently they are colored only as red/green/blue
+
+    4.) make the plugin store and retrieve user-defined settings in a config ]
+        file
+
+"""
+This plugin enables the users to visualize the results of quantum-chemical 
+calculation of chemical shielding tensors in PyMOL. Currently only 
+visualization of results obtained from Gaussian(R) calculation is supported.
+The plugin is tested with Pymol 1.4.1 and Gaussian ver 03 and 09 programs.
+
+To use CSTViz, you will need the output file from Gaussian calculation ran
+with the keyword 
+
+"NMR(PrintEigenVectors)" 
+
+in the route file. Additionaly, you will need some molecular coordinate file 
+to load, ideally with the same coordinates as the Gaussian input geometry. 
+You can then use the GUI found under the 'Plugins' menu, or the command line 
+interface to visualize data.
+
+
+The GUI part of this plugin is partially based on the APBS Tools plugin by
+Michael G. Lerner.
+
+KNOWN ISSUES:
+
+    1.) When the plugin is running and user switches desktops or shades window
+        the Pymol main window becomes unresponsive and all widget disappear
+
+This software is under development and I'm quite new to programming, so if you
+find some bug, weird piece of code or just want to give some constructive 
+advice, then by all means let me know.
+"""
+'''
 
 ##############################################################################
 # 
 # Lower level implementation of classes facilitating the file I/O and
 # representation of NMR chemical shielding data
-# PART:LOWER
 ##############################################################################
 from numpy import array, sum, dot
 from numpy.linalg import norm
@@ -19,8 +62,10 @@ from pymol.cgo import *
 
 class SigmaTensor():
     '''
-    Class for storing NMR shielding tensor information, namely its' eigenvalues
-    and eigenvectors
+    Class for storing and manipulating the NMR shielding tensor.
+    Facilitates the setting of eigenvalues/eigenvectors, translating the 
+    eigenvectors (they are centered at origin of coordinate system by default)
+    and also setup of parameters for rendering CST as CGO in PyMOL
     '''
 
     def __init__(self, 
@@ -124,7 +169,7 @@ class SigmaTensor():
             [0.0, 0.0, 0.0], 
             [0.0, 0.0, 0.0]]):
         '''
-        Sets the values of all three sigma eigenvectors at once
+        Sets the coordinates of all three sigma eigenvectors at once
         '''
         self.__eigVecs = array(vecs)
 
@@ -169,20 +214,25 @@ class SigmaTensor():
         self.__eigVecs[2] *= values[2]
 
     def translateTensor(self, point = [0.0, 0.0, 0.0]):
-        '''translates the eigenvectors to a given point in space'''
+        '''
+        translates the eigenvectors to a given point in space 
+        (for example to the coordinates of the corresponding atom)
+        '''
 
         trVector = array(point) - self.__origin
         self.__eigVecs += trVector
         self.__origin = array(point)
 
     def printInfo(self):
-        '''prints out a short summary about the tensor
+        '''
+        prints out a short summary about the tensor parameters
         '''
         message = "Nucleus: "
         message += self.__nucleus
         message += "\n"
 
         message += "Eigenvalues: " + repr(self.__sigmas) + "\n"
+        message += "Isotropic shielding " + repr(self.getSigmaIso()) + "\n"
         message += "Eigenvectors: " + repr(self.__eigVecs) + "\n"
         message += "CGO object width: " + repr(self.__cgoWidth) + "\n"
         message += "Relative widths: " + repr(self.__cgoRelWidths) + "\n"
@@ -198,9 +248,13 @@ class SigmaTensor():
         drawPseudo = True,
         showPseudo = True
     ):
-        '''Sets some parameters for the 3-D rendering of shielding tensor
-        as a collection of CGO objects. Sets up the colors of individual components, 
-        overall width of CGO objects and relative widths of individual components'''
+        '''
+        Sets some parameters for the 3-D rendering of shielding tensor
+        as a collection of CGOs. Sets up the colors of individual 
+        components, overall width of CGOs and relative widths of 
+        individual components. Also controls the presentation and drawing 
+        of pseudoatoms at the tips of CGO arrows
+        '''
 
         self.__cgoWidth = cgoWidth
         self.__cgoRelWidths = cgoRelWidths
@@ -209,7 +263,9 @@ class SigmaTensor():
         self.__showPseudo = showPseudo
 
     def setCGOWidth(self, width = 0.02):
-        '''Individual method to set the width of CGO object'''
+        '''
+        Individual method to set the width of CGO
+        '''
         self.__cgoWidth = width
         
     def setCGORelWidth11(self, width = 1.0):
@@ -237,28 +293,41 @@ class SigmaTensor():
         self.__cgoColors[2] = color33
 
     def setObjName(self, objName):
-        self.__objName = objName
-        self.__pseudoName = objName + "_comp"
+        '''sets the name of CGO in PyMOL'''
+        self.__objName = objName + "_CST"
+        self.__pseudoName = self.__objName + "_comp"
 
     def showPseudo(self, show = True):
+        '''controls whether the pseudoatoms at the tips of CGO arrows are 
+        visible or hidden'''
         self.__showPseudo = show
    
     def drawPseudo(self, draw = True):
+        '''controls the creation of pseudoatoms at the tips of CGO arrows.
+        This is very useful for geometrical analysis of tensor components,
+        e. g. you can easily measure an angle between specific component and 
+        a bond in molecule.
+
+        In addition, the value of the corresponding chemical shielding 
+        eigenvalue is written in the b-factor property of pseudoatom'''
         self.__drawPseudo = draw
 
     def getObjName(self):
+        '''returns a name of CGO'''
         return self.__objName
 
     def getPseudoName(self):
+        '''returns the name of pseudoatoms'''
         return self.__pseudoName
 
     def deleteCGOObject(self):
+        '''deletes the CGO Object'''
         cmd.delete(self.__objName)
         cmd.delete(self.__pseudoName)
 
     def prepareCGOObject(self):
-        '''Precalculates the 3D coordinates of CGO representation of shielding 
-        tensor'''
+        '''Precalculates the 3D coordinates and colors of CGO representation of 
+        shielding tensor'''
         self.__cgoObject = []
 
         for (n, vec) in enumerate(self.__eigVecs):
@@ -343,7 +412,8 @@ class SigmaTensor():
 
 
     def drawCGOObject(self):
-        '''Do the actual drawing in the PyMol scene'''
+        '''Do the actual drawing in the PyMol scene and create pseudoatoms if 
+        requested'''
         # delete previously drawn CGO
         cmd.delete(self.__objName)
         cmd.load_cgo(self.__cgoObject, self.__objName)
@@ -372,7 +442,8 @@ class SigmaTensor():
 
 class TensorList(dict):
     '''
-    Class for reading and storing NMR tensor values from Gaussian output
+    Container of SigmaTensor objects, facilitates reading tensor information from
+    Gaussian output class
     '''
 
     def __init__(self):
@@ -446,235 +517,10 @@ class TensorList(dict):
 
         gauOut.close()
         
-##############################################################################    
-#
-# Command line interface access to the plugin from PyMol interpreter
-# PART:CMD
-##############################################################################    
-
-def drawNMRTensors(selection="all", 
-    gauLogFile=None, 
-    objPrefix="", 
-    pseudo=1,
-    width=0.05, 
-    scaleByEigVal=0, 
-    factor=0.01, 
-    relWidth11=1.0, 
-    relWidth22=1.0, 
-    relWidth33=1.0, 
-    relScale11 = 1.0,
-    relScale22 = 1.0,
-    relScale33 = 1.0,
-    color11 = [1.0, 0.0, 0.0], 
-    color22 = [0.00 , 0.53 , 0.22], 
-    color33 = [0.02 , 0.50 , 0.72]
-):
-    '''A handy-dandy script for visualising the results of ab initio 
-calculation of chemical shift tensors performed in Gaussian program. It
-reads the Gaussian output containing the chemical shift tensor eigenvalues
-and eigenvectors (to calculate these run the Gaussian job with
-NMR(PrintEigenvectors) keyword), and draws the eigenvectors as CGO arrows
-for the nuclei of your choice. 
-
-You have to load the XYZ (PDB, etc...) file
-containing the atomic coordinates used in the calculation.
-
-USAGE
-
-    drawNMRTensors selection, gauLogFile=None, [ width=0.02, [scaleByEigVal=0, 
-        [factor=0.01, [pseudo=1]]]]
-
-    where:
-        "selection"     specifies the atoms for which to draw NMR tensors
-
-       "gauLogFile"    is the name of the Gaussian output file containing 
-                       NMR tensors
-
-       "width"         specifies the width of CGO arrows used for drawing
-                       and the size of pseudoatom spheres
-
-       "scaleByEigVal" when 0, the magnetic shielding eigenvectors are 
-                       drawn as unit vectors equal in size. The value
-                       other than 0 requests the scaling of eigenvectors
-                       by the values of corresponding magnetic shielding
-                       eigenvalues and some scaling factor
-
-       "factor"        the value of scaling factor used when the scaling 
-                       of eigenvectors is requested, optimal value is
-                       between 0.005 - 0.01 angstroms / ppm for carbon
-                       and nitrogen atoms
-
-       "pseudo"        controls whether pseudoatoms are placed at the 
-                       tips of CGO arrows, drawn as a spheres with radius
-                       equal to "width". These pseudoatoms have names
-                       "11", "22", "33" and the values of corresponding
-                       magnetic shielding components are written in the
-                       b-factor property. These pseudoatoms are useful
-                       for the labeling of the CGO objects and also for
-                       measurement (e.g. you can measure an angle between
-                       some bond and  magnetic shielding eigenvector).
-                       The value of 0 suppressed the creation of
-                       pseudoatoms.
-
-   EXAMPLE
-       
-       # load an XYZ coordinates of theobromine in standard orientation
-       load theobr.xyz, xyz
-
-       # draw the NMR shielding tensor for atom C8, scale the eigenvectors by 
-       # 0.005 * eigenvalues, do not place pseudoatoms
-
-       drawTensors (name C8), "theobr_NMRTensors.log", scale=1, factor=0.005, 
-           pseudo=0'''
-
-   # sanity check of input values
-   # dictionary of value types
-
-    scalarOptionTypes = {
-        "objPrefix" : "str",
-        "width" : "float",
-        "scaleByEigVal" : "int",
-        "factor" : "float",
-        "pseudo" : "int",
-        "relWidth11" : "float",
-        "relWidth22" : "float",
-        "relWidth33" : "float",
-        "relScale11" : "float",
-        "relScale22" : "float",
-        "relScale33" : "float",
-    }
-
-    listOptionTypes = {
-        "color11" : "float",
-        "color22" : "float",
-        "color33" : "float"
-    }
-
-
-    shieldingTensors = TensorList()
-
-    model = cmd.get_model(selection).atom
-    if len(model) == 0:
-        print "Missing or invalid atom selection: \"%s\"" % selection
-        return
-
-    try:
-        shieldingTensors.read(gauLogFile)
-    except IOError:
-        print "Cannot read Gaussian output \"%s\"!" % gauLogFile
-        print "Please check whether this file exists and is valid!"
-        return
-
-    if len(shieldingTensors) == 0:
-        print "No NMR shielding tensor information present in file \"%s\""\
-            % gauLogFile
-        print "Please run a Gaussian job with \"NMR(PrintEigenvectors)\" \
-           keyword in the route section!"
-        return
-
-    for (opt, optType) in scalarOptionTypes.iteritems():
-        try:
-            exec("%s = %s(%s)" % ( opt, optType, opt))
-        except ValueError:
-            print "Option \"%s\" must of type \"%s\"! (Was \"%s\")!"\
-            % (opt, optType, repr(type(opt)))
-            print exc_info()[:1]
-            return
-
-
-    for (opt, optType) in listOptionTypes.iteritems():
-        #i = eval("type(%s)" % opt)
-        #print "before:", i
-        try:
-            toList = eval("%s" % opt)
-            exec("%s = %s" % (opt, toList))
-
-            #i = eval("type(%s)" % opt)
-            #print "after: ", i
-
-            for (i, val) in enumerate(eval("%s" % opt)):
-                # print i, val
-                exec("%s[%s] = %s(%s)" % (opt, i, optType, val))
-                # print "Type: ", eval("type(%s[%s])" % (opt, i))
-
-        except NameError, ValueError:
-            print "Option \"%s\" must be list of type \"%s\"!" % (opt, optType)
-            return
-
-    # set the relative widths array for emphasizing certain components
-    relWidths = [ relWidth11, relWidth22, relWidth33 ]
-
-    # OK, input is tested, now get to work
-
-    for i in model:
-        # first double check that the gaussian output contains the 
-        # information we need
-        try:
-            currTensor = shieldingTensors[i.index]
-        except KeyError:
-            print "Atom %6d has no NMR tensor information in Gaussian \
-                output!" % i.index
-            continue
-
-        scalingFactors = []
-        # apply vector rescaling when requested
-        if scaleByEigVal != 0:
-            sigmas = currTensor.getSigmas()
-            # I found the value of 0.01 A per ppm as the best scaling factor
-            scalingFactors = sigmas * factor
-        else:
-            scalingFactors = [
-                relScale11,
-                relScale22,
-                relScale33
-            ]
-
-        currTensor.scaleEigVecs(scalingFactors) 
-        # now translate the eigenvector to the position of nucleus
-        # Gaussian prints the eigenvectors with respect to origin
-        currTensor.translateTensor(i.coord)
-
-        # name of the CGO object
-        cgoObjName = objPrefix + "_" + currTensor.getNucleus() + repr(i.index) +\
-            "_sigmaTensor"                 
-
-        # color of individual components, 11 is red, 22 is green, 33 is blue
-        #colors = [
-        #    [1.0, 0.0, 0.0],
-        #    [0.00 , 0.53 , 0.22],
-        #    [0.02 , 0.50 , 0.72]
-        #]
-
-        colors = [
-            color11,
-            color22,
-            color33
-        ]
-
-        currTensor.setCGOParams(cgoWidth = width, 
-            cgoRelWidths = relWidths,
-            cgoColors = colors,
-        )
-
-        if pseudo != 0:
-            currTensor.showPseudo(True)
-            currTensor.drawPseudo(True)
-        else:
-            currTensor.showPseudo(False)
-            currTensor.drawPseudo(False)
-            
-            
-        currTensor.prepareCGOObject(i.coord)
-
-        currTensor.drawCGOObject(cgoObjName)
-
-cmd.extend("drawNMRTensors", drawNMRTensors)
 
 ##############################################################################
-#
 # GUI layer implementation, currently a mess, could use some refactoring
 # (c) 2012 Martin Babinsky
-# PART:GUI
 ##############################################################################
 import Pmw
 import Tkinter
@@ -689,7 +535,6 @@ class CSTVizGUI:
         self.__moleculeList = {}
         self.__parent = app.root
         self.__redrawText = 'Redraw/refresh'
-        self.__reloadText = 'Reload'
         self.__exitText =  'Exit'
 
         self.__drawPseudoVar = Tkinter.BooleanVar()
@@ -739,16 +584,14 @@ class CSTVizGUI:
         #####################################################################
         self.__appTitle = 'NMR Shielding Tensors visualization plugin'
         self.__topLabelText = "(c) 2012 Martin Babinsky: martbab (at) chemi (dot) muni (dot) cz"
-        self.__top = Pmw.MegaToplevel(self.__parent)
-        self.__top.withdraw()
-        self.__top.geometry('600x400')
+        self.__top = Pmw.Dialog(self.__parent,
+            buttons = (self.__redrawText, self.__exitText),
+            command = self.execute
+        )
         self.__top.title(self.__appTitle)
-        self.__top.columnconfigure(0,
-            weight = 1
-        )
-        self.__top.rowconfigure(1,
-            weight = 1
-        )
+        self.__top.withdraw()
+
+        self.__top.component('hull').geometry('600x400')
         Pmw.setbusycursorattributes(self.__top.component('hull'))
         self.__top.protocol("WM_DELETE_WINDOW", self.exit)
         self.__topLabel = Tkinter.Label(self.__top.interior(), 
@@ -756,61 +599,47 @@ class CSTVizGUI:
         )
         self.__topLabel.grid(row = 0, 
             column = 0, 
-            columnspan = 2,
             sticky="we"
         )
-        self.__mainFrame = Tkinter.Frame(self.__top.interior(), 
-            borderwidth = 5
-        )
-        self.__mainFrame.grid(row = 1, 
-            column = 0, 
-            columnspan = 2,
-            sticky = "nsew"
-        )
-        self.__mainFrame.columnconfigure(0, 
-            weight = 1
-        )
-        self.__mainFrame.rowconfigure(0, 
-            weight = 1
-        )
-        self.__redrawButton = Tkinter.Button(self.__top.interior(),
-            text = self.__redrawText,
-            command = self.redrawCSTs
-        )
-        self.__redrawButton.grid(
-            row = 2,
-            column = 0,
-        )
-        self.__exitButton = Tkinter.Button(self.__top.interior(), 
-            text = self.__exitText,
-            command = self.exit
-        )
-        self.__exitButton.grid(
-            row = 2,
-            column = 1,
-        )
+#       self.__redrawButton = Tkinter.Button(self.__top.interior(),
+#           text = self.__redrawText,
+#           command = self.redrawCSTs
+#       )
+#       self.__redrawButton.grid(
+#           row = 2,
+#           column = 0,
+#       )
+#       self.__exitButton = Tkinter.Button(self.__top.interior(), 
+#           text = self.__exitText,
+#           command = self.exit
+#       )
+#       self.__exitButton.grid(
+#           row = 2,
+#           column = 1,
+#       )
         #####################################################################
         # the notebook class to organize GUI into two groups
         # 1) List of loaded files/tensors, adding/deleting items, configuring
         #    individual items
         # 2) Global settings
         #####################################################################
-        self.__noteBook = Pmw.NoteBook(self.__mainFrame)
+        self.__noteBook = Pmw.NoteBook(self.__top.interior())
+        self.__noteBook.grid(
+            column = 0,
+            row = 1,
+            sticky = "nsew"
+        )
+        print self.__noteBook.grid_info()
 
+        self.__top.interior().grid_columnconfigure(0,
+            weight = 1
+        )
+        self.__top.interior().grid_rowconfigure(1,
+            weight = 1,
+        )
         self.__cstManager = self.__noteBook.add('CST list')
         self.__globalSettings = self.__noteBook.add('Global settings')
 
-        self.__noteBook.grid(
-            column = 0,
-            row = 0,
-            sticky = "nsew",
-        )
-        self.__noteBook.columnconfigure(0,
-            weight = 1,
-        )
-        self.__noteBook.rowconfigure(0,
-            weight = 1,
-        )
         #####################################################################
         # CST Manager controls loading/deleting of new items and individual
         # configuration
@@ -850,7 +679,7 @@ class CSTVizGUI:
 #           color33 = self.__color33,
         )
 
-        self.__top.show()
+        self.showAppModal()
 
     def __cstManagerHandler(self, parent):
         self.__filesItemsWindow(parent)
@@ -872,6 +701,12 @@ class CSTVizGUI:
             column = 0,
             sticky = "nsew"
         )
+        self.__fileListFrame.columnconfigure(0, 
+            weight = 1,
+        )
+        self.__fileListFrame.rowconfigure(0, 
+            weight = 1,
+        )
 
         self.__fileContentsFrame = Tkinter.LabelFrame(parent,
             text = "file contents"
@@ -880,6 +715,12 @@ class CSTVizGUI:
         self.__fileContentsFrame.grid(row = 0,
             column = 1,
             sticky = "nsew"
+        )
+        self.__fileContentsFrame.columnconfigure(0, 
+            weight = 1,
+        )
+        self.__fileContentsFrame.rowconfigure(0, 
+            weight = 1,
         )
         self.__fileListComponent(self.__fileListFrame)
         self.__fileContentsListBoxComponent(self.__fileContentsFrame)
@@ -1273,7 +1114,7 @@ class CSTVizGUI:
                 sorted(self.__fileList[self.__selectedFile].keys())
             )
         except KeyError,IndexError:
-            self.__fileContents.clear()
+            self.__fileContentsListBox.clear()
 
     def localSettingsWindow(self, parent):
         self.__windowParent = Tkinter.Toplevel(parent)
@@ -1285,7 +1126,7 @@ class CSTVizGUI:
 
 
     def removeSel(self):
-        selection = self.__fileContents.getcurselection()
+        selection = self.__fileContentsListBox.getcurselection()
         for sel in selection:
             self.__fileList[self.__selectedFile][sel].deleteCGOObject()
             del self.__fileList[self.__selectedFile][sel]
@@ -1370,13 +1211,22 @@ class CSTVizGUI:
         self.__top.destroy()
 
 
+    def execute(self, event = None):
+        if event == self.__redrawText:
+            self.redrawCSTs()
+        else:
+            self.exit()
+
+    def showAppModal(self):
+        self.__top.show()
 #############################################################################
 #
-# attempt to refactor the GUI components for better readability
-#
-# PART:GUI_REFACT
+# some parts of GUI written as separate classes to improve readability a bit
 #############################################################################
 class SettingsWindow:
+    '''
+    widget for the settings, etiher local or global
+    '''
     def __init__(self, parent, 
         **kwargs
     ):
@@ -1522,6 +1372,9 @@ class SettingsWindow:
         )
 
 class RelWidthsSpinBoxes:
+    '''
+    Widget controlling the relative width of CGO components
+    '''
     def __init__(self, parent, **kwargs):
         self.__parent = parent
 
@@ -1593,6 +1446,9 @@ class RelWidthsSpinBoxes:
         )
 
 class RelLenSpinBoxes:
+    '''
+    widget controlling the relative length of CGO components
+    '''
     def __init__(self, parent, **kwargs):
 
         self.__parent = parent
@@ -1665,6 +1521,9 @@ class RelLenSpinBoxes:
         )
 
 class ComponentColorButtons:
+    '''
+    widget controlling the colors of CGO components
+    '''
     def __init__(self, parent, **kwargs):
         self.__parent = parent
 
@@ -1752,7 +1611,9 @@ class ComponentColorButtons:
 
 class CGOColor:
     '''
-    a wrapper class for defining colors of CGO and passing them around
+    a wrapper class defining colors of CGOs and passing them around.
+    Also facilitates the normalization of color code and conversion to Hex 
+    code for use with Tk
     '''
     def __init__(self, color = [0.0, 0.0, 0.0]):
         self.__color = [0.0, 0.0, 0.0]
@@ -1792,6 +1653,241 @@ class CGOColor:
 
 
             self.__calcHexColor()
+
+##############################################################################    
+#
+# Command line interface access to the plugin from PyMOL interpreter
+##############################################################################    
+
+def drawcst(selection = "all", 
+    gauLogFile = None, 
+    objName = "", 
+    width = 0.05, 
+    relWidth11 = 1.0, 
+    relWidth22 = 1.0, 
+    relWidth33 = 1.0, 
+    relLen11 = 1.0,
+    relLen22 = 1.0,
+    relLen33 = 1.0,
+    color11 = [1.0, 0.0, 0.0], 
+    color22 = [0.00 , 1.0 , 0.0], 
+    color33 = [0.00 , 0.00 , 1.0],
+    pseudo = 1,
+    showPseudo = 1,
+):
+
+    '''
+    A handy-dandy script for visualising the results of ab initio 
+    calculation of chemical shift tensors performed in Gaussian program. It
+    reads the Gaussian output containing the chemical shift tensor eigenvalues
+    and eigenvectors (to calculate these run the Gaussian job with
+    NMR(PrintEigenvectors) keyword), and draws the eigenvectors as CGO arrows
+    for the nuclei of your choice. 
+
+    You have to load the XYZ (PDB, etc...) file
+    containing the atomic coordinates used in the calculation.
+
+    USAGE
+
+        drawNMRTensors selection, 
+            gauLogFile = None, 
+            [objName = "", 
+            [width=0.02, 
+            [relwidth11/22/33 = 1.0,
+            [relLen11/22/33 = 1.0,
+            [color11 = [1.0, 0.0, 0.0],
+            [color22 = [0.0, 1.0, 0.0],
+            [color33 = [0.0, 0.0, 1.0],
+            [pseudo = 1,
+            [showPseudo = 1,
+            ]]]]]]]]]
+
+        where:
+           "selection"     specifies the atoms for which to draw NMR tensors
+
+           "gauLogFile"    is the name of the Gaussian output file containing 
+                           NMR tensors
+           
+           "objName"       name prefix of the CGOs and pseudoatoms.
+
+           "width"         specifies the width of CGO arrows used for drawing
+                           and the size of pseudoatom spheres
+           
+           "relWidth11/22/33"   relative width of individual components,
+                           e.g. relWidth11 = 1.5 makes the arrow 
+                           corresponding to 11 component 1.5x thicker relative 
+                           to other components
+
+           "relLen11/22/33"     similar to above, only controls the length of 
+                           CGO arrows
+
+           "color11/22/33" colors the individual arrows. Color code is passed
+                           as a list of RGB values from 0 to 1
+
+           "pseudo"        controls whether pseudoatoms are placed at the 
+                           tips of CGO arrows, drawn as a spheres with radius
+                           equal to "width". These pseudoatoms have names
+                           "11", "22", "33" and the values of corresponding
+                           magnetic shielding components are written in the
+                           b-factor property. These pseudoatoms are useful
+                           for the labeling of the CGO objects and also for
+                           measurement (e.g. you can measure an angle between
+                           some bond and  magnetic shielding eigenvector).
+                           The value of 0 suppressed the creation of
+                           pseudoatoms.
+
+           "showPseudo"    if >0, then the pseudoatoms are shown as spheres at
+                           the tips of CGO arrows. 0 makes them hidden
+
+       EXAMPLE
+           
+           # load an XYZ coordinates of theobromine in standard orientation
+           load theobr.xyz, xyz
+
+           # draw the NMR shielding tensor for atom C8, make the CGO representing
+           # 11 components 1.5 times thicker and longer, color it black, don't 
+           # create pseudoatoms
+
+           drawTensors (xyz and name C8), theobr_NMRTensors.log, relWidth11 = 1.5,
+               relLen11 = 1.5, color11 = [0, 0, 0], pseudo=0
+
+    '''
+
+   # sanity check of input values
+   # dictionary of value types
+
+    scalarOptionTypes = {
+        "objName" : "str",
+        "width" : "float",
+        "pseudo" : "int",
+        "relWidth11" : "float",
+        "relWidth22" : "float",
+        "relWidth33" : "float",
+        "relScale11" : "float",
+        "relScale22" : "float",
+        "relScale33" : "float",
+    }
+
+    listOptionTypes = {
+        "color11" : "float",
+        "color22" : "float",
+        "color33" : "float"
+    }
+
+
+    shieldingTensors = TensorList()
+
+    model = cmd.get_model(selection).atom
+    if len(model) == 0:
+        print "Missing or invalid atom selection: \"%s\"" % selection
+        return
+
+    try:
+        shieldingTensors.read(gauLogFile)
+    except IOError:
+        print "Cannot read Gaussian output \"%s\"!" % gauLogFile
+        print "Please check whether this file exists and is valid!"
+        return
+
+    if len(shieldingTensors) == 0:
+        print "No NMR shielding tensor information present in file \"%s\""\
+            % gauLogFile
+        print "Please run a Gaussian job with \"NMR(PrintEigenvectors)\" \
+           keyword in the route section!"
+        return
+
+    for (opt, optType) in scalarOptionTypes.iteritems():
+        try:
+            exec("%s = %s(%s)" % ( opt, optType, opt))
+        except ValueError:
+            print "Option \"%s\" must of type \"%s\"! (Was \"%s\")!"\
+            % (opt, optType, repr(type(opt)))
+            print exc_info()[:1]
+            return
+
+
+    for (opt, optType) in listOptionTypes.iteritems():
+        #i = eval("type(%s)" % opt)
+        #print "before:", i
+        try:
+            toList = eval("%s" % opt)
+            exec("%s = %s" % (opt, toList))
+
+            #i = eval("type(%s)" % opt)
+            #print "after: ", i
+
+            for (i, val) in enumerate(eval("%s" % opt)):
+                # print i, val
+                exec("%s[%s] = %s(%s)" % (opt, i, optType, val))
+                # print "Type: ", eval("type(%s[%s])" % (opt, i))
+
+        except NameError, ValueError:
+            print "Option \"%s\" must be list of type \"%s\"!" % (opt, optType)
+            return
+
+    # set the relative widths array for emphasizing certain components
+    relWidths = [ relWidth11, relWidth22, relWidth33 ]
+
+    # OK, input is tested, now get to work
+
+    for i in model:
+        # first double check that the gaussian output contains the 
+        # information we need
+        try:
+            currTensor = shieldingTensors[i.index]
+        except KeyError:
+            print "Atom %6d has no NMR tensor information in Gaussian \
+                output!" % i.index
+            continue
+
+        scalingFactors = [
+            relScale11,
+            relScale22,
+            relScale33
+        ]
+
+        currTensor.scaleEigVecs(scalingFactors) 
+        # now translate the eigenvector to the position of nucleus
+        # Gaussian prints the eigenvectors with respect to origin
+        currTensor.translateTensor(i.coord)
+
+        # name of the CGO object
+
+        currTensor.setObjName(objName)
+        # color of individual components, 11 is red, 22 is green, 33 is blue
+
+        colors = [
+            color11,
+            color22,
+            color33
+        ]
+
+        currTensor.setCGOParams(cgoWidth = width, 
+            cgoRelWidths = relWidths,
+            cgoColors = colors,
+        )
+
+        if pseudo != 0:
+            currTensor.drawPseudo(True)
+        else:
+            currTensor.drawPseudo(False)
+
+        if showPseudo != 0:
+            currTensor.showPseudo(True)
+        else:
+            currTensor.showPseudo(False)
+            
+            
+        currTensor.prepareCGOObject(i.coord)
+
+        currTensor.drawCGOObject(cgoObjName)
+
+cmd.extend("drawcst", drawcst)
+
+#############################################################################
+#
+# initialization of the plugin, adding it to the PyMOL > Plugin dir
+#############################################################################
 
 def __init__(self):
     """
