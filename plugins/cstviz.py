@@ -7,17 +7,17 @@ Date: March 2012
 ------
 
 TODO: 
-    1.) Fix the weird issue with PyMOL main window freezing when switching 
-        desktops on Unix system
-
-    2.) Make the plugin load the molecular geometry along the CST data directly 
+    1.) Make the plugin load the molecular geometry along the CST data directly 
         from the Gaussian ouput file.
 
-    3.) enable the coloring of pseudoatoms by their corresponding components
+    2.) enable the coloring of pseudoatoms by their corresponding components
         currently they are colored only as red/green/blue
 
-    4.) make the plugin store and retrieve user-defined settings in a config ]
+    3.) make the plugin store and retrieve user-defined settings in a config
         file
+
+    4.) make the atom selection persistent and connected with each TensorList
+        instance. 
 
 """
 This plugin enables the users to visualize the results of quantum-chemical 
@@ -41,8 +41,7 @@ Michael G. Lerner.
 
 KNOWN ISSUES:
 
-    1.) When the plugin is running and user switches desktops or shades window
-        the Pymol main window becomes unresponsive and all widget disappear
+    1.) atom selections are not stored for each file separately
 
 This software is under development and I'm quite new to programming, so if you
 find some bug, weird piece of code or just want to give some constructive 
@@ -90,6 +89,7 @@ class SigmaTensor():
         self.__index = index 
         self.__cgoWidth = 0.02
         self.__cgoRelWidths = [ 1.0, 1.0, 1.0 ]
+        self.__cgoRelLengths = [ 1.0, 1.0, 1.0 ]
         self.__cgoColors = [[ 1.0, 0.0, 0.0 ],
                             [ 0.0, 1.0, 0.0 ],
                             [ 0.0, 0.0, 1.0 ]]
@@ -207,11 +207,11 @@ class SigmaTensor():
         '''Returns the value of isotropic chemical shielding'''
         return (1 / 3.0) * sum(self.__sigmas)
 
-    def scaleEigVecs(self, values = [1.0, 1.0, 1.0]):
+    def setCGORelLengths(self, values = [1.0, 1.0, 1.0]):
         '''Scales the eigenvectors by arbitrary values'''
-        self.__eigVecs[0] *= values[0]
-        self.__eigVecs[1] *= values[1]
-        self.__eigVecs[2] *= values[2]
+        self.__cgoRelLengths[0] = values[0]
+        self.__cgoRelLengths[1] = values[1]
+        self.__cgoRelLengths[2] = values[2]
 
     def translateTensor(self, point = [0.0, 0.0, 0.0]):
         '''
@@ -244,6 +244,7 @@ class SigmaTensor():
 
     def setCGOParams(self, cgoWidth=0.02, 
         cgoRelWidths = [ 1.0, 1.0, 1.0 ], 
+        cgoRelLengths = [ 1.0, 1.0, 1.0 ],
         cgoColors = [[1.0, 0.0, 0.0], [ 0.0, 1.0, 0.0 ], [ 0.0, 0.0, 1.0 ]],
         drawPseudo = True,
         showPseudo = True
@@ -261,6 +262,7 @@ class SigmaTensor():
         self.__cgoColors = cgoColors
         self.__drawPseudo = drawPseudo
         self.__showPseudo = showPseudo
+        self.__cgoRelLengths = cgoRelLengths
 
     def setCGOWidth(self, width = 0.02):
         '''
@@ -337,8 +339,9 @@ class SigmaTensor():
             cgoWidth = self.__cgoRelWidths[n] * self.__cgoWidth
 
             # defintion of cone length and end point
-            dirVec = vec - self.__origin
-            dirVecLength = norm(dirVec)
+            dirVec = (vec - self.__origin) * \
+                self.__cgoRelLengths[n]
+            dirVecLength = norm(dirVec) 
             coneLength = 5 * cgoWidth
 
             # cylinder endpoint definition, made in a way that seems
@@ -348,8 +351,8 @@ class SigmaTensor():
 
             # end of cones at eigenvector position and its reflection
             # around coordinates of nucleus
-            cone1End = vec
-            cone2End = 2 * self.__origin - vec
+            cone1End = self.__origin + dirVec
+            cone2End = self.__origin - dirVec
 
             # first define that we draw a cylinder
             self.__cgoObject.append(CYLINDER)
@@ -416,23 +419,30 @@ class SigmaTensor():
         requested'''
         # delete previously drawn CGO
         cmd.delete(self.__objName)
-        cmd.load_cgo(self.__cgoObject, self.__objName)
         cmd.delete(self.__pseudoName)
+        cmd.load_cgo(self.__cgoObject, self.__objName)
 
         if self.__drawPseudo:
             self.__pseudoRadius = 1.5 * self.__cgoWidth
             cmd.pseudoatom(self.__pseudoName, name="11", 
                 vdw = self.__pseudoRadius,
                 b = self.__sigmas[0],
-                pos = tuple(self.__eigVecs[0]), color="red")
+                pos = tuple(self.__eigVecs[0] * \
+                    self.__cgoRelLengths[0]),
+                color="red"
+            )
             cmd.pseudoatom(self.__pseudoName, name="22", 
                 vdw = self.__pseudoRadius,
                 b = self.__sigmas[1],
-                pos = tuple(self.__eigVecs[1]), color="green")
+                pos = tuple(self.__eigVecs[1]), 
+                color="green"
+            )
             cmd.pseudoatom(self.__pseudoName, name="33", 
                 vdw = self.__pseudoRadius,
                 b = self.__sigmas[2],
-                pos = tuple(self.__eigVecs[2]), color="blue")
+                pos = tuple(self.__eigVecs[2]), 
+                color="blue"
+            )
             cmd.show_as("spheres", self.__pseudoName)
 
             if not self.__showPseudo:
@@ -807,7 +817,7 @@ class CSTVizGUI:
 
         self.__reloadFileButton = Tkinter.Button(parent,
             text = "Reload file",
-            command = lambda: self.localSettingsWindow(parent),
+            command = lambda: self.reloadFile,
         )
         self.__reloadFileButton.grid(
             row = 2,
@@ -883,6 +893,7 @@ class CSTVizGUI:
 #           labelpos = 'nw',
             listbox_height = 10,
             listbox_selectmode = "extended",
+            selectioncommand = self.getSelectedCSTs
         )
         self.__fileContentsListBox.grid(
             row = 0,
@@ -1014,6 +1025,18 @@ class CSTVizGUI:
         except KeyError, IndexError:
             pass
 
+    def removeFile(self):
+        self.clearAllCSTs()
+        try:
+            del self.__fileList[self.__selectedFile]
+            self.__fileListBox.delete("active")
+        except KeyError:
+            pass
+
+    def getSelectedCSTs(self):
+        self.__selectedCSTs = self.__fileContentsListBox.getcurselection()
+        
+
     def assignMolToCSTs(self):
         molecules = cmd.get_names_of_type('object:molecule')
 
@@ -1057,7 +1080,7 @@ class CSTVizGUI:
     def getPyMolObjSele(self):
         selections = cmd.get_names('all')
 
-        self.__filterToSeleComboBox = Pmw.ComboBoxDialog(self.__top,
+        self.__filterToSeleComboBox = Pmw.ComboBoxDialog(self.__top.interior(),
             title = 'filter data by molecule/selection',
             label_text = 'choose PyMOL object',
             combobox_labelpos = 'n',
@@ -1102,10 +1125,6 @@ class CSTVizGUI:
 
         self.updateCSTView()
 
-    def removeFile(self):
-        self.clearAllCSTs()
-        del self.__fileList[self.__selectedFile]
-        self.__fileListBox.delete("active")
 
     def updateCSTView(self):
         # print selectedFile
@@ -1128,8 +1147,7 @@ class CSTVizGUI:
 
 
     def removeSel(self):
-        selection = self.__fileContentsListBox.getcurselection()
-        for sel in selection:
+        for sel in self.__selectedCSTs:
             self.__fileList[self.__selectedFile][sel].deleteCGOObject()
             del self.__fileList[self.__selectedFile][sel]
 
@@ -1161,9 +1179,14 @@ class CSTVizGUI:
             cgoRelWidths = [ 
                 self.__relWidth11Var.get(),
                 self.__relWidth22Var.get(),
-                self.__relWidth33Var.get(),
+                self.__relWidth33Var.get()
             ],
-           cgoColors = [
+            cgoRelLengths = [
+                self.__relLen11Var.get(),
+                self.__relLen22Var.get(),
+                self.__relLen33Var.get()
+            ],
+            cgoColors = [
                 self.__color11.getColor(),
                 self.__color22.getColor(),
                 self.__color33.getColor()
