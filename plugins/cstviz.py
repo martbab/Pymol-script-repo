@@ -16,8 +16,7 @@ TODO:
     3.) make the plugin store and retrieve user-defined settings in a config
         file
 
-    4.) make the atom selection persistent and connected with each TensorList
-        instance. 
+    4.) rewrite the '__setDefaults' method so it works properly
 
 """
 This plugin enables the users to visualize the results of quantum-chemical 
@@ -40,8 +39,9 @@ The GUI part of this plugin is partially based on the APBS Tools plugin by
 Michael G. Lerner.
 
 KNOWN ISSUES:
+    1.) The 'Restore defaults' button does not work as expected. Probably
+        the method 'CSTVizGUI.__setDefaults' does not work as expected
 
-    1.) atom selections are not stored for each file separately
 
 This software is under development and I'm quite new to programming, so if you
 find some bug, weird piece of code or just want to give some constructive 
@@ -56,8 +56,33 @@ advice, then by all means let me know.
 ##############################################################################
 from numpy import array, sum, dot
 from numpy.linalg import norm
-from pymol import cmd, stored
+from pymol import cmd, stored, CmdException
 from pymol.cgo import *
+import inspect
+from copy import deepcopy
+
+
+# debugging symbol to make developer's life a bit easier
+DEBUG = True
+
+def printDebugInfo(action, *args):
+    '''print some useful debugging information using \"inspect\" module.
+    can print the \"action\" performed on \"*args\"'''
+    debugStack = inspect.stack()
+
+    debugPrefix = "::DEBUG<%6d>:: " % debugStack[1][2]
+    debugMsg = debugPrefix + "method \"%s\" called by \"%s\"\n" % \
+        (debugStack[1][3], debugStack[2][3])
+
+    if action is not None:
+        debugMsg += debugPrefix + " " * 4 + action + " "
+
+    if len(args) != 0:
+        debugMsg += repr(args) 
+
+    print debugMsg
+
+
 
 class SigmaTensor():
     '''
@@ -97,7 +122,7 @@ class SigmaTensor():
         self.__drawPseudo = True
         self.__showPseudo = True
         self.__cgoObject = []
-        self.__objName = self.__nucleus
+        self.__objName = self.__nucleus + repr(self.__index)
         self.__pseudoName = self.__objName + "_comp"
 
     def setNucleus(self, nuc = ""):
@@ -121,10 +146,14 @@ class SigmaTensor():
         '''returns the string containing the nucleus type'''
         return self.__nucleus
 
+    def setOrigin(self, origin = [0.0, 0.0, 0.0]):
+        '''sets the origin of CGO representation'''
+        self.__origin = origin
+
 
     def getOrigin(self):
         '''
-        gets the position of tensor
+        gets the origin of CGO representation
         '''
         return self.__origin
 
@@ -213,19 +242,9 @@ class SigmaTensor():
         self.__cgoRelLengths[1] = values[1]
         self.__cgoRelLengths[2] = values[2]
 
-    def translateTensor(self, point = [0.0, 0.0, 0.0]):
-        '''
-        translates the eigenvectors to a given point in space 
-        (for example to the coordinates of the corresponding atom)
-        '''
-
-        trVector = array(point) - self.__origin
-        self.__eigVecs += trVector
-        self.__origin = array(point)
-
     def printInfo(self):
         '''
-        prints out a short summary about the tensor parameters
+        prints out a short summary about the tensor parameters as string
         '''
         message = "Nucleus: "
         message += self.__nucleus
@@ -234,13 +253,14 @@ class SigmaTensor():
         message += "Eigenvalues: " + repr(self.__sigmas) + "\n"
         message += "Isotropic shielding " + repr(self.getSigmaIso()) + "\n"
         message += "Eigenvectors: " + repr(self.__eigVecs) + "\n"
+        message += "Tensor origin: " + repr(self.__origin) + "\n"
         message += "CGO object width: " + repr(self.__cgoWidth) + "\n"
         message += "Relative widths: " + repr(self.__cgoRelWidths) + "\n"
         message += "Colors: " + repr(self.__cgoColors) + "\n"
         message += "Draw pseudoatoms: " + repr(self.__drawPseudo) + "\n"
         message += "Show pseudoatoms as spheres: " + repr(self.__showPseudo)
 
-        print message
+        return message
 
     def setCGOParams(self, cgoWidth=0.02, 
         cgoRelWidths = [ 1.0, 1.0, 1.0 ], 
@@ -263,6 +283,44 @@ class SigmaTensor():
         self.__drawPseudo = drawPseudo
         self.__showPseudo = showPseudo
         self.__cgoRelLengths = cgoRelLengths
+
+    def setCGOParamsFromGUI(self, 
+        settingsDict, 
+    ):
+        '''
+        Sets some parameters for the 3-D rendering of shielding tensor
+        as a collection of CGOs. Sets up the colors of individual 
+        components, overall width of CGOs and relative widths of 
+        individual components. Also controls the presentation and drawing 
+        of pseudoatoms at the tips of CGO arrows. This method is called from
+        the GUI layer (with the dictionary of Tkinter variables controlling
+        the appearance as argument).
+        '''
+
+        self.__cgoWidth = settingsDict['absCGOWidthVar'].get()
+        self.__cgoRelWidths = [
+            settingsDict['relWidth11Var'].get(),
+            settingsDict['relWidth22Var'].get(),
+            settingsDict['relWidth33Var'].get()
+        ]
+
+        self.__cgoColors = [
+            settingsDict['color11'].getColor(),
+            settingsDict['color22'].getColor(),
+            settingsDict['color33'].getColor()
+        ]
+
+        self.__drawPseudo = settingsDict['drawPseudoVar'].get()
+        self.__showPseudo = settingsDict['showPseudoVar'].get()
+        self.__cgoRelLengths = [
+            settingsDict['relLen11Var'].get(),
+            settingsDict['relLen22Var'].get(),
+            settingsDict['relLen33Var'].get()
+        ]
+        if DEBUG:
+            printDebugInfo("changed settings for item:", 
+                "%s%04d" % (self.__nucleus, self.__index))
+            printDebugInfo("item settings:", self.printInfo())
 
     def setCGOWidth(self, width = 0.02):
         '''
@@ -339,8 +397,7 @@ class SigmaTensor():
             cgoWidth = self.__cgoRelWidths[n] * self.__cgoWidth
 
             # defintion of cone length and end point
-            dirVec = (vec - self.__origin) * \
-                self.__cgoRelLengths[n]
+            dirVec = vec * self.__cgoRelLengths[n]
             dirVecLength = norm(dirVec) 
             coneLength = 5 * cgoWidth
 
@@ -427,20 +484,22 @@ class SigmaTensor():
             cmd.pseudoatom(self.__pseudoName, name="11", 
                 vdw = self.__pseudoRadius,
                 b = self.__sigmas[0],
-                pos = tuple(self.__eigVecs[0] * \
-                    self.__cgoRelLengths[0]),
+                pos = tuple(self.__origin + (self.__eigVecs[0] * \
+                    self.__cgoRelLengths[0])),
                 color="red"
             )
             cmd.pseudoatom(self.__pseudoName, name="22", 
                 vdw = self.__pseudoRadius,
                 b = self.__sigmas[1],
-                pos = tuple(self.__eigVecs[1]), 
+                pos = tuple(self.__origin + (self.__eigVecs[1] * \
+                        self.__cgoRelLengths[1])), 
                 color="green"
             )
             cmd.pseudoatom(self.__pseudoName, name="33", 
                 vdw = self.__pseudoRadius,
                 b = self.__sigmas[2],
-                pos = tuple(self.__eigVecs[2]), 
+                pos = tuple(self.__origin + (self.__eigVecs[2] * \
+                    self.__cgoRelLengths[2])), 
                 color="blue"
             )
             cmd.show_as("spheres", self.__pseudoName)
@@ -450,14 +509,26 @@ class SigmaTensor():
 
 
 
-class TensorList(dict):
+class TensorList():
     '''
-    Container of SigmaTensor objects, facilitates reading tensor information from
-    Gaussian output class
+    Container of SigmaTensor objects, facilitates reading tensor information 
+    from Gaussian output according to selection specs from PyMOL. 
+    Also facilitates manipulation of data, like deleting, refreshing of list,
+    filtering according to user selection.
     '''
 
     def __init__(self):
-        self = {}
+        # the dictionary of SigmaTensor objects 
+        # the keys are in the format 'C10', 'H9' etc.
+        self.__data = {}
+        # the name of the logfile the data are from
+        self.__filename = ""
+        # PyMOL selection for data filtering
+        self.__pymolSele = "all"
+        # custom name for PyMOL selection
+        self.__pymolSeleName = "all"
+        # format for tensor dictionary keys
+        self.__dictKeyFormat = "%s%03d"
 
 
     def __parseGauOutFile(self, gauOutfile):
@@ -495,20 +566,30 @@ class TensorList(dict):
                         vectors.append([float(n) for n in fields[1:4]])
                     else:
                         vectors.append([float(n) for n in fields[1:4]])
-                        self[atomKey].setEigVecs(vectors)
+                        self.__data[atomKey].setEigVecs(vectors)
                         eigVectorsFound = False
                         continue
 
                 # print fields
                 if "Isotropic" in fields:
-                    atomKey = "%s%03d" % (fields[1], int(fields[0]))
+                    nucleus = fields[1]
+                    index = int(fields[0])
+                    # TODO:
+
+                    atomKey = self.__dictKeyFormat % (fields[1], int(fields[0]))
                     # print atomKey
-                    self[atomKey] = SigmaTensor(nucleus = fields[1], 
-                        index = int(fields[0]))
-                    self[atomKey].setObjName(atomKey)
+                    self.__data[atomKey] = SigmaTensor(nucleus = fields[1], 
+                        index = int(fields[0])
+                    )
+                    self.__data[atomKey].setObjName(atomKey)
                 elif "Eigenvalues:" in fields:
-                    self[atomKey].setSigmas([float(fields[1]), float(fields[2]),
-                        float(fields[3])])
+                    self.__data[atomKey].setSigmas(
+                        [   
+                            float(fields[1]), 
+                            float(fields[2]),
+                            float(fields[3])
+                        ]
+                    )
                 elif "Eigenvectors:" in fields:
                     eigVectorsFound = True
                     vectors = []
@@ -523,10 +604,142 @@ class TensorList(dict):
         calculation as a dictionary of SigmaTensor objects'''
         gauOut = open(gauOutputName, "r")
 
+        self.__filename = gauOutputName
+
         self.__parseGauOutFile(gauOut)
 
         gauOut.close()
+
+    def setPymolSele(self, sele = "all", seleName = ""):
+        self.__pymolSele = sele
+        self.__pymolSeleName = seleName
+        if seleName == "":
+            self.__pymolSeleName = sele
+        for d in self.__data:
+            self.__data[d].deleteCGOObject()
+            self.__data[d].setObjName(self.__pymolSeleName + "_" + d)
+
+        self.__setSeleAtomDict()
+
+    def setPymolSeleName(self, seleName = ""):
+        self.__pymolSeleName = seleName
+
+        for d in self.__data:
+            self.__data[d].deleteCGOObject()
+            self.__data[d].setObjName(self.__pymolSeleName + "_" + d)
+
+    def getPymolSele(self):
+        return self.__pymolSele
+
+    def getPymolSeleName(self):
+        return self.__pymolSeleName
+
+    def __setSeleAtomDict(self):
+        seleAtomList = cmd.get_model(self.__pymolSele).atom
+
+        self.__seleAtomDict = {}
         
+        for atom in seleAtomList:
+            atomKey = self.__dictKeyFormat % (atom.symbol, atom.index)
+            self.__seleAtomDict[atomKey] = atom
+
+    def limitToPymolSele(self):
+        keysToRemove = []
+
+        # loop through tensor list and search elements
+        # which have the corresponding key in the atom selection
+        # when found reset the origin to the position of the selected
+        # atom. Otherwise append the element key to the array of elements
+        # to be removed
+        for d in self.__data:
+            if d in self.__seleAtomDict:
+
+                self.__data[d].setOrigin(origin = self.__seleAtomDict[d].coord)
+                if DEBUG:
+                    printDebugInfo("altered following:", d)
+
+                self.__data[d].prepareCGOObject()
+            else:
+                keysToRemove.append(d)
+        
+        # remove the elements which were not selected
+        for key in keysToRemove:
+
+            if DEBUG:
+                printDebugInfo("deleted following:", key)
+                
+            del self.__data[key]
+
+    def getItems(self):
+        return sorted(self.__data.keys())
+
+    def removeItems(self, items = []):
+        '''deletes the items from the tensor list if they are present.
+        item selection is specified as array of strings. If the list is empty,
+        then all items are removed'''
+        if DEBUG:
+            printDebugInfo("items to delete:", items)
+
+        if len(items) == 0:
+            for d in self.__data:
+                self.__data[d].deleteCGOObject()
+
+            if DEBUG:
+                printDebugInfo("deleted all items")
+
+            self.__data = {}
+
+        else:
+            for i in items:
+                if i in self.__data:
+                    self.__data[i].deleteCGOObject()
+                    del self.__data[i]
+
+                    if DEBUG:
+                        printDebugInfo("deleted item", i)
+
+    def redrawItems(self):
+        for d in self.__data:
+            self.__data[d].prepareCGOObject()
+            self.__data[d].drawCGOObject()
+            if DEBUG:
+                printDebugInfo("redraw item:", d)
+
+    def applyCGOSettings(self, cgoSettingsDict):
+        '''apply graphical settings to the items specified by the array
+        of keys. When the array is empty the method will alter the CGO 
+        settings of all items. The settings are specified as a dictionary
+        and passed to the individual tensor objects.
+        '''
+        for d in self.__data:
+            self.__data[d].setCGOParams(**cgoSettingsDict)
+
+            if DEBUG:
+                printDebugInfo("applied CGO settings to item: ", d)
+
+
+    def applyCGOSettingsFromGUI(self, cgoSettingsDict, items = []):
+        '''apply graphical settings to the items specified by the array
+        of keys. When the array is empty the method will alter the CGO 
+        settings of all items. The settings are specified as a dictionary
+        and passed to the individual tensor objects. This is for use in the GUI layer,
+        '''
+
+        if len(items) == 0:
+            for d in self.__data:
+                self.__data[d].setCGOParamsFromGUI(cgoSettingsDict)
+                if DEBUG:
+                    printDebugInfo("applied CGO settings to item:", d)
+
+        else:
+            for i in items:
+                if i in self.__data:
+                    self.__data[i].setCGOParamsFromGUI(cgoSettingsDict)
+                    self.__data[i].prepareCGOObject()
+
+                    if DEBUG:
+                        printDebugInfo("applied CGO settings to item:", i)
+
 
 ##############################################################################
 # GUI layer implementation, currently a mess, could use some refactoring
@@ -542,7 +755,6 @@ from os.path import basename
 class CSTVizGUI:
     def __init__(self, app):
         self.__fileList = {}
-        self.__moleculeList = {}
         self.__parent = app.root
         self.__redrawText = 'Redraw/refresh'
         self.__exitText =  'Exit'
@@ -579,9 +791,8 @@ class CSTVizGUI:
         }
 
         self.__selectedFile = ""
-        self.__selectedFileIndex = 0
 
-        self.__selectedCSTs = []
+        self.__selectedItems = []
 
         #set the default values of variables
         self.__setDefaults()
@@ -612,22 +823,6 @@ class CSTVizGUI:
             column = 0, 
             sticky="we"
         )
-#       self.__redrawButton = Tkinter.Button(self.__top.interior(),
-#           text = self.__redrawText,
-#           command = self.redrawCSTs
-#       )
-#       self.__redrawButton.grid(
-#           row = 2,
-#           column = 0,
-#       )
-#       self.__exitButton = Tkinter.Button(self.__top.interior(), 
-#           text = self.__exitText,
-#           command = self.exit
-#       )
-#       self.__exitButton.grid(
-#           row = 2,
-#           column = 1,
-#       )
         #####################################################################
         # the notebook class to organize GUI into two groups
         # 1) List of loaded files/tensors, adding/deleting items, configuring
@@ -647,7 +842,7 @@ class CSTVizGUI:
         self.__top.interior().grid_rowconfigure(1,
             weight = 1,
         )
-        self.__cstManager = self.__noteBook.add('CST list')
+        self.__cstManager = self.__noteBook.add('Data lists')
         self.__globalSettings = self.__noteBook.add('Global settings')
 
         #####################################################################
@@ -672,36 +867,12 @@ class CSTVizGUI:
             applyCommand = self.applyGlobalSettings,
             setDefaultCommand = self.__setDefaults,
             **self.__settingsDictionary
-#           drawPseudoVar = self.__drawPseudoVar,
-#           showPseudoVar = self.__showPseudoVar,
-#           absCGOWidthVar = self.__absCGOWidthVar,
-
-#           relWidth11Var = self.__relWidth11Var,
-#           relWidth22Var = self.__relWidth22Var,
-#           relWidth33Var = self.__relWidth33Var,
-
-#           relLen11Var = self.__relLen11Var,
-#           relLen22Var = self.__relLen22Var,
-#           relLen33Var = self.__relLen33Var,
-
-#           color11 = self.__color11,
-#           color22 = self.__color22,
-#           color33 = self.__color33,
         )
 
         self.showAppModal()
 
     def __cstManagerHandler(self, parent):
         self.__filesItemsWindow(parent)
-
-        #self.__cstButtonFrame = Tkinter.Frame(parent)
-        #self.__cstButtonFrame.grid(
-        #    row = 0,
-        #    column = 1,
-        #)
-
-        #self.__cstButtonGroup(self.__cstButtonFrame)
-
 
     def __filesItemsWindow(self, parent):
         self.__fileListFrame = Tkinter.LabelFrame(parent,
@@ -740,18 +911,14 @@ class CSTVizGUI:
 
     def __fileListComponent(self, parent):
         self.__fileListBox = Pmw.ScrolledListBox(parent,
-#           label_text = "Loaded files",
-#           labelpos = 'nw',
             listbox_height = 8,
             selectioncommand = self.selectFile,
-#            listbox_selectmode = "extended",
         )
 
         self.__fileListBox.grid(
             row = 0,
             column = 0,
             columnspan = 1,
-#           rowspan = 3,
             sticky = 'nsew'
         )
 
@@ -789,11 +956,8 @@ class CSTVizGUI:
         self.__fileListBoxMenu.add_command( label = "Reload File",
             command = self.reloadFile,
         )
-        self.__fileListBoxMenu.add_command( label = "Assign molecule object",
-            command = self.assignMolToCSTs,
-        )
         self.__fileListBoxMenu.add_command( label = "Limit to selection",
-            command = self.filterToSelection
+            command = self.filterToPymolSele
         )
         self.__fileListBoxMenu.add_command( label = "Settings",
             command = lambda: self.localSettingsWindow(parent),
@@ -847,7 +1011,7 @@ class CSTVizGUI:
 
     def __selectionFilterGroup(self, parent):
         self.__selectionEntry = Pmw.EntryField( parent,
-            command = self.filterToSelection,
+            command = self.filterToPymolSele,
             label_text = "selection",
             labelpos = 'nw',
             value = 'all',
@@ -858,7 +1022,7 @@ class CSTVizGUI:
             sticky = 'we'
         )
         self.__selectionNameEntry = Pmw.EntryField( parent,
-            command = self.filterToSelection,
+            command = self.renamePymolSele,
             label_text = "name for selection",
             labelpos = 'nw',
             value = 'sele1',
@@ -870,8 +1034,8 @@ class CSTVizGUI:
         )
 
         self.__getSelectionButton = Tkinter.Button( parent,
-            text = 'get PyMOL object/selection',
-            command = self.getPyMolObjSele,
+            text = 'get PyMOL selection',
+            command = self.choosePymolSele,
         )
         self.__getSelectionButton.grid(
             row = 2,
@@ -880,7 +1044,7 @@ class CSTVizGUI:
         )
         self.__filterSelectionButton = Tkinter.Button( parent,
             text = 'Filter data',
-            command = self.filterToSelection,
+            command = self.filterToPymolSele,
         )
         self.__filterSelectionButton.grid(
             row = 3,
@@ -889,11 +1053,9 @@ class CSTVizGUI:
         )
     def __fileContentsListBoxComponent(self, parent):
         self.__fileContentsListBox = Pmw.ScrolledListBox(self.__fileContentsFrame,
-#           label_text = "CSTs",
-#           labelpos = 'nw',
             listbox_height = 10,
             listbox_selectmode = "extended",
-            selectioncommand = self.getSelectedCSTs
+            selectioncommand = self.getSelectedItems
         )
         self.__fileContentsListBox.grid(
             row = 0,
@@ -916,10 +1078,10 @@ class CSTVizGUI:
             command = lambda: self.localSettingsWindow(parent),
         )
         self.__dataFileContentsMenu.add_command(label = "Remove",
-            command = self.removeSel,
+            command = self.removeSelectedItems,
         )
         self.__dataFileContentsMenu.add_command(label = "Clear List",
-            command = self.clearAllCSTs,
+            command = self.clearAllItems,
         )
         ###########################
         self.__fileContentsListBox.component("listbox").bind("<Button-3>", 
@@ -956,7 +1118,7 @@ class CSTVizGUI:
         )
         self.__removeButton = Tkinter.Button( parent,
             text = "Remove",
-            command = self.removeSel,
+            command = self.removeSelectedItems,
         )
         self.__removeButton.grid(
             row = 3,
@@ -965,7 +1127,7 @@ class CSTVizGUI:
         )
         self.__removeAllButton = Tkinter.Button( parent,
             text = "Remove all",
-            command = self.clearAllCSTs,
+            command = self.clearAllItems,
         )
         self.__removeAllButton.grid(
             row = 4,
@@ -976,21 +1138,32 @@ class CSTVizGUI:
 
     def cstMenu(self, event):
         self.__dataFileContentsMenu.tk_popup(event.x_root, event.y_root)
-        self.__selectedCSTs = self.__fileContentsListBox.getcurselection()
+        self.__selectedItems = self.__fileContentsListBox.getcurselection()
+
+        if DEBUG:
+            print "::DEBUG::class \"%s\", method \"%s\": menu called at %d %d" % \
+                    (self.__name__, self.cstMenu.__name__, event.x_root, event.y_root)
+            print "::DEBUG::\tselected items list: %s" % (repr(self.__selectedItems))
 
     def fileMenu(self, event):
         self.__fileListBoxMenu.tk_popup(event.x_root, event.y_root)
 
         try:
-            self.__selectedCSTs = self.__fileList[self.__selectedFile].keys()
+            self.__selectedItems = self.__fileList[self.__selectedFile].getItems()
         except KeyError:
             pass
 
     def selectFile(self):
         try:
             self.__selectedFile = self.__fileListBox.getcurselection()[0]
-            self.updateCSTView()
-            self.__selectedCSTs = self.__fileList[self.__selectedFile].keys()
+            self.updateFileContListBox()
+            self.__selectedItems = self.__fileList[self.__selectedFile].getItems()
+            self.__selectionEntry.setvalue(
+                self.__fileList[self.__selectedFile].getPymolSele()
+            )
+            self.__selectionNameEntry.setvalue(
+                self.__fileList[self.__selectedFile].getPymolSeleName()
+            )
         except IndexError, KeyError:
             pass
 
@@ -1006,85 +1179,41 @@ class CSTVizGUI:
                 self.__fileList[f].read(f)
                 self.__fileListBox.insert("end", f)
 
-                for tensor in self.__fileList[f]:
-                    self.applyCGOSettings(self.__fileList[f][tensor])
-
-                #print repr(self.__fileList[basename(f)])
+                self.__fileList[f].applyCGOSettingsFromGUI(
+                    self.__settingsDictionary
+                )
 
     def reloadFile(self):
         try:
-            self.clearAllCSTs()
+            self.clearAllItems()
             self.__fileList[self.__selectedFile].read(self.__selectedFile)
+            self.__fileList[self.__selectedFile].applyCGOSettingsFromGUI(
+                self.__settingsDictionary
+            )
 
-            for tensor in self.__fileList[self.__selectedFile]:
-                self.applyCGOSettings(
-                    self.__fileList[self.__selectedFile][tensor]
-                )
-
-            self.updateCSTView()
+            self.updateFileContListBox()
         except KeyError, IndexError:
             pass
 
     def removeFile(self):
-        self.clearAllCSTs()
+        self.clearAllItems()
         try:
             del self.__fileList[self.__selectedFile]
             self.__fileListBox.delete("active")
         except KeyError:
             pass
 
-    def getSelectedCSTs(self):
-        self.__selectedCSTs = self.__fileContentsListBox.getcurselection()
-        
+    def getSelectedItems(self):
+        self.__selectedItems = self.__fileContentsListBox.getcurselection()
 
-    def assignMolToCSTs(self):
-        molecules = cmd.get_names_of_type('object:molecule')
-
-        self.__molAssiComboBox = Pmw.ComboBoxDialog(parent,
-            title = 'molecule assignment',
-            label_text = 'assign molecular geometry to data',
-            combobox_labelpos = 'n',
-            buttons = ('Assign', 'Cancel'),
-            scrolledlist_items = tuple(molecules),
-        )
-        self.__molAssiComboBox.withdraw()
-        result = self.__molAssiComboBox.activate()
-        molecule = self.__molAssiComboBox.get()
-
-        if molecule != "":
-            # print molecule
-            atomList = cmd.get_model(molecule).atom
-            atomDict = {}
-
-            for atom in atomList:
-                atomDict[atom.index] = atom
-
-
-            for t in self.__fileList[self.__selectedFile]:
-                self.__fileList[self.__selectedFile][t].deleteCGOObject()
-
-                try:
-                    self.__fileList[self.__selectedFile][t].setObjName(molecule + "_" + t)
-
-                    self.__fileList[self.__selectedFile][t].translateTensor(
-                        atomDict[self.__fileList[self.__selectedFile][t].getIndex()].coord,
-                    )
-                    self.__fileList[self.__selectedFile][t].prepareCGOObject()
-                    # print self.__fileList[self.__selectedFile][t].getOrigin()
-
-                except IndexError, KeyError:
-                    print "No chemical shielding information for atom %s" % t
-
-        self.updateCSTView()
-
-    def getPyMolObjSele(self):
+    def choosePymolSele(self):
         selections = cmd.get_names('all')
 
         self.__filterToSeleComboBox = Pmw.ComboBoxDialog(self.__top.interior(),
             title = 'filter data by molecule/selection',
             label_text = 'choose PyMOL object',
             combobox_labelpos = 'n',
-            buttons = ('Limit', 'Cancel'),
+            buttons = ('Accept', 'Cancel'),
             scrolledlist_items = tuple(selections),
         )
         self.__filterToSeleComboBox.withdraw()
@@ -1094,45 +1223,48 @@ class CSTVizGUI:
         if selection != "":
             self.__selectionEntry.setvalue(selection)
 
-    def filterToSelection(self):
+    def filterToPymolSele(self):
+        try:
+            selection = self.__selectionEntry.getvalue()
+            selectionName = self.__selectionNameEntry.getvalue()
+            atomList = cmd.get_model(selection).atom
+            self.__fileList[self.__selectedFile].setPymolSele(sele = selection,
+                seleName = selectionName
+            )
+            self.__fileList[self.__selectedFile].limitToPymolSele()
+            self.updateFileContListBox()
+        except CmdException:
+            pass
 
-        selection = self.__selectionEntry.getvalue()
-        selectionName = self.__selectionNameEntry.getvalue()
-        atomList = cmd.get_model(selection).atom
+    def getPymolSele(self):
+        try:
+            return self.__fileList[self.__selectedFile].getPymolSele()
+        except KeyError:
+            return 'all'
 
-        atomDict = {}
-        
-        dataToDelete = []
-        for atom in atomList:
-            atomDict[atom.index] = atom
+    def getPymolSeleName(self):
+        try:
+            return self.__fileList[self.__selectedFile].getPymolSeleName()
+        except KeyError:
+            return 'all'
 
-        # loop over data in selected file and test which one of them is 
-        # contained in selection. If it is not, add it to the group of data
-        # to delete
-        for t in self.__fileList[self.__selectedFile]:
-            if self.__fileList[self.__selectedFile][t].getIndex() in atomDict:
-                self.__fileList[self.__selectedFile][t].setObjName(selectionName + "_" + t)
-                self.__fileList[self.__selectedFile][t].translateTensor(
-                    atomDict[self.__fileList[self.__selectedFile][t].getIndex()].coord
-                )
-                self.__fileList[self.__selectedFile][t].prepareCGOObject()
-            else:
-                self.__fileList[self.__selectedFile][t].deleteCGOObject()
-                dataToDelete.append(t)
+    def renamePymolSele(self):
+        try:
+            selectionName = self.__selectionNameEntry.getvalue()
+            self.__fileList[self.__selectedFile].setPymolSeleName(selectionName)
+        except CmdError:
+            pass
+        except KeyError:
+            pass
 
-        for d in dataToDelete:
-            del self.__fileList[self.__selectedFile][d]
-
-        self.updateCSTView()
+        self.updateFileContListBox()
 
 
-    def updateCSTView(self):
-        # print selectedFile
-        # print repr(selectedTensor)
+    def updateFileContListBox(self):
 
         try:
             self.__fileContentsListBox.setlist(
-                sorted(self.__fileList[self.__selectedFile].keys())
+                self.__fileList[self.__selectedFile].getItems()
             )
         except KeyError,IndexError:
             self.__fileContentsListBox.clear()
@@ -1146,12 +1278,12 @@ class CSTVizGUI:
         )
 
 
-    def removeSel(self):
-        for sel in self.__selectedCSTs:
+    def removeSelectedItems(self):
+        for sel in self.__selectedItems:
             self.__fileList[self.__selectedFile][sel].deleteCGOObject()
             del self.__fileList[self.__selectedFile][sel]
 
-        self.updateCSTView()
+        self.updateFileContListBox()
 
 
 
@@ -1171,65 +1303,31 @@ class CSTVizGUI:
         self.__color11.setColor([1.0, 0.0, 0.0])
         self.__color22.setColor([0.0, 1.0, 0.0])
         self.__color33.setColor([0.0, 0.0, 1.0])
-        
-
-    def applyCGOSettings(self, tensor):
-        tensor.setCGOParams(
-            cgoWidth = self.__absCGOWidthVar.get(),
-            cgoRelWidths = [ 
-                self.__relWidth11Var.get(),
-                self.__relWidth22Var.get(),
-                self.__relWidth33Var.get()
-            ],
-            cgoRelLengths = [
-                self.__relLen11Var.get(),
-                self.__relLen22Var.get(),
-                self.__relLen33Var.get()
-            ],
-            cgoColors = [
-                self.__color11.getColor(),
-                self.__color22.getColor(),
-                self.__color33.getColor()
-            ],
-            drawPseudo = self.__drawPseudoVar.get(),
-            showPseudo = self.__showPseudoVar.get()
-        )
-        tensor.prepareCGOObject()
-
-
 
     def applyLocalSettings(self, parent):
-        for sel in self.__selectedCSTs:
-            try:
-                self.applyCGOSettings(self.__fileList[self.__selectedFile][sel])
-            except KeyError:
-                print "Atom", sel, "is not present in list!"
-                pass
-#           print "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
-#           print sel
-#           self.__fileList[self.__selectedFile][sel].printInfo()
-#           print "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+        self.__fileList[self.__selectedFile].applyCGOSettingsFromGUI(
+            self.__settingsDictionary,
+            items = self.__selectedItems
+        )
         parent.destroy()
 
     def applyGlobalSettings(self):
         for fileName in self.__fileList:
-            for tensor in self.__fileList[fileName]:
-                self.applyCGOSettings(self.__fileList[fileName][tensor])                
-#               self.__fileList[fileName][tensor].printInfo()
+            self.__fileList[fileName].applyCGOSettingsFromGUI(
+                self.__settingsDictionary
+            )
 
-    def clearAllCSTs(self):
+    def clearAllItems(self):
         self.__fileContentsListBox.clear()
 
-        if self.__selectedFile in self.__fileList:
-            for tensor in self.__fileList[self.__selectedFile]:
-               self.__fileList[self.__selectedFile][tensor].deleteCGOObject()
+        try:
+            self.__fileList[self.__selectedFile].removeItems()
+        except KeyError:
+            pass
 
-            self.__fileList[self.__selectedFile].clear()
-
-    def redrawCSTs(self):
+    def redrawItems(self):
         for filename in self.__fileList:
-            for i in self.__fileList[filename]:
-                self.__fileList[filename][i].drawCGOObject()
+            self.__fileList[filename].redrawItems()
 
     def exit(self, event = None):
         self.__top.destroy()
@@ -1237,12 +1335,13 @@ class CSTVizGUI:
 
     def execute(self, event = None):
         if event == self.__redrawText:
-            self.redrawCSTs()
+            self.redrawItems()
         else:
             self.exit()
 
     def showAppModal(self):
         self.__top.show()
+
 #############################################################################
 #
 # some parts of GUI written as separate classes to improve readability a bit
@@ -1267,7 +1366,7 @@ class SettingsWindow:
             weight = 1
         )
         self.__fileIOSettings = Tkinter.LabelFrame(self.__parent,
-            text = "File handling",
+            text = "Pseudoatoms",
         )
         self.__fileIOSettings.grid(row = 0,
             column = 0,
@@ -1364,7 +1463,6 @@ class SettingsWindow:
             relWidth22Var = self.relWidth22Var,
             relWidth33Var = self.relWidth33Var
         )
-        #self.__relWidthsScaleGroup(self.__relWidthGroup)
         self.__relLenGroup = Tkinter.LabelFrame(parent,
             text = 'Relative lengths of tensor components',
             borderwidth = 0,
@@ -1661,10 +1759,10 @@ class CGOColor:
         self.__hexColor = "#%02X%02X%02X" % (r8, g8, b8)
 
     def getHexColor(self):
-        return self.__hexColor
+        return deepcopy(self.__hexColor)
 
     def getColor(self):
-        return self.__color
+        return deepcopy(self.__color)
 
     def normalizeColor(self):
         if (self.__color[0] > 1) \
@@ -1713,7 +1811,7 @@ def drawcst(selection = "all",
 
     USAGE
 
-        drawNMRTensors selection, 
+        drawcst selection, 
             gauLogFile = None, 
             [objName = "", 
             [width=0.02, 
@@ -1787,9 +1885,9 @@ def drawcst(selection = "all",
         "relWidth11" : "float",
         "relWidth22" : "float",
         "relWidth33" : "float",
-        "relScale11" : "float",
-        "relScale22" : "float",
-        "relScale33" : "float",
+        "relLen11" : "float",
+        "relLen22" : "float",
+        "relLen33" : "float",
     }
 
     listOptionTypes = {
@@ -1799,30 +1897,10 @@ def drawcst(selection = "all",
     }
 
 
-    shieldingTensors = TensorList()
-
-    model = cmd.get_model(selection).atom
-    if len(model) == 0:
-        print "Missing or invalid atom selection: \"%s\"" % selection
-        return
-
-    try:
-        shieldingTensors.read(gauLogFile)
-    except IOError:
-        print "Cannot read Gaussian output \"%s\"!" % gauLogFile
-        print "Please check whether this file exists and is valid!"
-        return
-
-    if len(shieldingTensors) == 0:
-        print "No NMR shielding tensor information present in file \"%s\""\
-            % gauLogFile
-        print "Please run a Gaussian job with \"NMR(PrintEigenvectors)\" \
-           keyword in the route section!"
-        return
-
     for (opt, optType) in scalarOptionTypes.iteritems():
         try:
             exec("%s = %s(%s)" % ( opt, optType, opt))
+
         except ValueError:
             print "Option \"%s\" must of type \"%s\"! (Was \"%s\")!"\
             % (opt, optType, repr(type(opt)))
@@ -1845,66 +1923,46 @@ def drawcst(selection = "all",
                 exec("%s[%s] = %s(%s)" % (opt, i, optType, val))
                 # print "Type: ", eval("type(%s[%s])" % (opt, i))
 
-        except NameError, ValueError:
+        except (NameError, ValueError):
             print "Option \"%s\" must be list of type \"%s\"!" % (opt, optType)
             return
 
     # set the relative widths array for emphasizing certain components
-    relWidths = [ relWidth11, relWidth22, relWidth33 ]
+    settingsDict = {
+        'cgoWidth' : width,
+        'cgoRelWidths' : [relWidth11, relWidth22, relWidth33],
+        'cgoRelLengths' : [relLen11, relLen22, relLen33],
+        'cgoColors' : [color11, color22, color33]
+    }
+
+    if pseudo != 0:
+        settingsDict['drawPseudo'] = True
+    else:
+        settingsDict['drawPseudo'] = False
+
+    if showPseudo != 0:
+        settingsDict['showPseudo'] = True
+    else:
+        settingsDict['showPseudo'] = False
+
 
     # OK, input is tested, now get to work
+    shieldingTensors = TensorList()
 
-    for i in model:
-        # first double check that the gaussian output contains the 
-        # information we need
-        try:
-            currTensor = shieldingTensors[i.index]
-        except KeyError:
-            print "Atom %6d has no NMR tensor information in Gaussian \
-                output!" % i.index
-            continue
+    try:
+        shieldingTensors.read(gauLogFile)
+    except IOError:
+        print "Cannot read Gaussian output \"%s\"!" % gauLogFile
+        print "Please check whether this file exists and is valid!"
+        return
 
-        scalingFactors = [
-            relScale11,
-            relScale22,
-            relScale33
-        ]
 
-        currTensor.scaleEigVecs(scalingFactors) 
-        # now translate the eigenvector to the position of nucleus
-        # Gaussian prints the eigenvectors with respect to origin
-        currTensor.translateTensor(i.coord)
+    shieldingTensors.setPymolSele(sele = selection, seleName = objName)
+    shieldingTensors.limitToPymolSele()
 
-        # name of the CGO object
+    shieldingTensors.applyCGOSettings(settingsDict)
 
-        currTensor.setObjName(objName)
-        # color of individual components, 11 is red, 22 is green, 33 is blue
-
-        colors = [
-            color11,
-            color22,
-            color33
-        ]
-
-        currTensor.setCGOParams(cgoWidth = width, 
-            cgoRelWidths = relWidths,
-            cgoColors = colors,
-        )
-
-        if pseudo != 0:
-            currTensor.drawPseudo(True)
-        else:
-            currTensor.drawPseudo(False)
-
-        if showPseudo != 0:
-            currTensor.showPseudo(True)
-        else:
-            currTensor.showPseudo(False)
-            
-            
-        currTensor.prepareCGOObject(i.coord)
-
-        currTensor.drawCGOObject(cgoObjName)
+    shieldingTensors.redrawItems()
 
 cmd.extend("drawcst", drawcst)
 
