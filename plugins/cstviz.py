@@ -63,7 +63,7 @@ from copy import deepcopy
 
 
 # debugging symbol to make developer's life a bit easier
-DEBUG = True
+DEBUG = False
 
 def printDebugInfo(action, *args):
     '''print some useful debugging information using \"inspect\" module.
