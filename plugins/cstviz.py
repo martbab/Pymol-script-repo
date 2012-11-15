@@ -700,6 +700,7 @@ class TensorList():
 
     def redrawItems(self):
         for d in self.__data:
+            self.__data[d].deleteCGOObject()
             self.__data[d].prepareCGOObject()
             self.__data[d].drawCGOObject()
             if DEBUG:
@@ -1228,12 +1229,13 @@ class CSTVizGUI:
             selection = self.__selectionEntry.getvalue()
             selectionName = self.__selectionNameEntry.getvalue()
             atomList = cmd.get_model(selection).atom
+
             self.__fileList[self.__selectedFile].setPymolSele(sele = selection,
                 seleName = selectionName
             )
             self.__fileList[self.__selectedFile].limitToPymolSele()
             self.updateFileContListBox()
-        except CmdException:
+        except CmdException, KeyError:
             pass
 
     def getPymolSele(self):
@@ -1279,9 +1281,10 @@ class CSTVizGUI:
 
 
     def removeSelectedItems(self):
-        for sel in self.__selectedItems:
-            self.__fileList[self.__selectedFile][sel].deleteCGOObject()
-            del self.__fileList[self.__selectedFile][sel]
+        self.__fileList[self.__selectedFile].removeItems(self.__selectedItems)
+        # for sel in self.__selectedItems:
+        #    self.__fileList[self.__selectedFile][sel].deleteCGOObject()
+        #    del self.__fileList[self.__selectedFile][sel]
 
         self.updateFileContListBox()
 
