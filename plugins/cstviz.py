@@ -488,10 +488,24 @@ class SigmaTensor():
                     self.__cgoRelLengths[0])),
                 color="red"
             )
+            cmd.pseudoatom(self.__pseudoName, name="-11", 
+                vdw = self.__pseudoRadius,
+                b = self.__sigmas[0],
+                pos = tuple(self.__origin - (self.__eigVecs[0] * \
+                    self.__cgoRelLengths[0])),
+                color="red"
+            )
             cmd.pseudoatom(self.__pseudoName, name="22", 
                 vdw = self.__pseudoRadius,
                 b = self.__sigmas[1],
                 pos = tuple(self.__origin + (self.__eigVecs[1] * \
+                        self.__cgoRelLengths[1])), 
+                color="green"
+            )
+            cmd.pseudoatom(self.__pseudoName, name="-22", 
+                vdw = self.__pseudoRadius,
+                b = self.__sigmas[1],
+                pos = tuple(self.__origin - (self.__eigVecs[1] * \
                         self.__cgoRelLengths[1])), 
                 color="green"
             )
@@ -502,10 +516,17 @@ class SigmaTensor():
                     self.__cgoRelLengths[2])), 
                 color="blue"
             )
+            cmd.pseudoatom(self.__pseudoName, name="-33", 
+                vdw = self.__pseudoRadius,
+                b = self.__sigmas[2],
+                pos = tuple(self.__origin - (self.__eigVecs[2] * \
+                    self.__cgoRelLengths[2])), 
+                color="blue"
+            )
             cmd.show_as("spheres", self.__pseudoName)
 
             if not self.__showPseudo:
-                cmd.hide("spheres", self.__pseudoName)
+                cmd.hide("everything", self.__pseudoName)
 
 
 
@@ -595,10 +616,6 @@ class TensorList():
                     vectors = []
                     continue
            
-
-
-
-            
     def read(self, gauOutputName = ""):
         '''Method to read the Gaussian log file and store the results of NMR 
         calculation as a dictionary of SigmaTensor objects'''
