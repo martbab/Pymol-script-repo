@@ -63,7 +63,7 @@ from copy import deepcopy
 
 
 # debugging symbol to make developer's life a bit easier
-DEBUG = False
+DEBUG = True
 
 def print_debug_info(action, *args):
     '''print some useful debugging information using \"inspect\" module.
@@ -367,94 +367,21 @@ class TensorList():
     Also facilitates manipulation of data, like deleting, refreshing of list,
     filtering according to user selection.
     '''
+    # format for tensor dictionary keys
     _key_format = "%s%03d"
 
     def __init__(self):
         # the dictionary of SigmaTensor objects 
         # the keys are in the format 'C10', 'H9' etc.
         self.data = {}
-        # the name of the logfile the data are from
+        # the name of the file the data are from
         self.filename = ""
         # PyMOL selection for data filtering
         self.selection = "all"
         # custom name for PyMOL selection
         self.sele_name = "all"
-        # format for tensor dictionary keys
-
-
-    def __parse_gaussian_outfile(self, gau_outfile):
-        '''Internal method for parsing the Gaussian logfile and storing the 
-        results of NMR calculations as SigmaTensor objects'''
-        # TODO: this stuff is a mess, try to rewrite it in a cleaner way
-
-        # this string signals the start of NMR properties section in logfile
-        section_start = "Magnetic shielding tensor (ppm)"
-        # this substring denotes the end
-        section_end = "End of Minotr Frequency-dependent properties"
-        atom_key = ""
-        section_found = False
-        eigenvectors_found = False
-        vectors = []
-        line_num = 0
-
-        for line in gau_outfile:
-            line_num += 1
-            # print lineNum 
-
-            if section_end in line:
-                break
-
-            if section_start in line:
-                section_found = True
-                continue
-
-            if section_found:
-                fields = line.split()
-                if eigenvectors_found:                
-                    # print fields
-                    vector_index = int(fields[0][1])
-                    if vector_index != 3:
-                        vectors.append([float(n) for n in fields[1:4]])
-                    else:
-                        vectors.append([float(n) for n in fields[1:4]])
-                        self.data[atom_key].eigenvectors = array(vectors)
-                        eigenvectors_found = False
-                        continue
-
-                # print fields
-                if "Isotropic" in fields:
-                    nucleus = fields[1]
-                    index = int(fields[0])
-                    # TODO:
-
-                    atom_key = self.__class__._key_format % (fields[1], int(fields[0]))
-                    self.data[atom_key] = SigmaTensor(nucleus = fields[1], 
-                        index = int(fields[0])
-                    )
-                    self.data[atom_key].cgo_name = atom_key
-                elif "Eigenvalues:" in fields:
-                    self.data[atom_key].sigmas = array(
-                        [   
-                            float(fields[1]), 
-                            float(fields[2]),
-                            float(fields[3])
-                        ]
-                    )
-                elif "Eigenvectors:" in fields:
-                    eigenvectors_found = True
-                    vectors = []
-                    continue
-           
-    def read(self, filename = ""):
-        '''Method to read the Gaussian log file and store the results of NMR 
-        calculation as a dictionary of SigmaTensor objects'''
-        gau_output = open(filename, "r")
-
-        self.filename = filename
-
-        self.__parse_gaussian_outfile(gau_output)
-
-        gau_output.close()
+        # shielding type for future use
+        self.shielding_type = 'total'
 
     def insert(self, *args):
         key = ""
@@ -601,7 +528,7 @@ class TensorList():
                         print_debug_info("applied CGO settings to item:", i)
 
 
-class GaussianParser(object):
+class GaussianOutputParser(object):
     '''
     class for parsing Gaussian logfile and loading data to TensorList
     '''
@@ -624,13 +551,13 @@ class GaussianParser(object):
         result.index = int(block[0][0])
         result.nucleus = block[0][1]
 
-        if (block[4][0] == GaussianParser._eigenvalues
+        if (block[4][0] == GaussianOutputParser._eigenvalues
             and
-            block[5][0] == GaussianParser._eigenvectors):
+            block[5][0] == GaussianOutputParser._eigenvectors):
             result.sigmas = array(
                 map(float, block[4][1:4])
             )
-            result.eigVecs = array(
+            result.eigenvectors = array(
                 [
                     map(float, i[1:4]) for i in block[6:9]
                 ]
@@ -654,20 +581,20 @@ class GaussianParser(object):
         with open(filename, 'r') as f:
             for line in f:
                 # GaussianParser._line_no += 1
-                if GaussianParser._section_begin in line:
+                if GaussianOutputParser._section_begin in line:
                     section_found = True
                     continue
 
                 if section_found:
-                    if GaussianParser._section_end in line:
+                    if GaussianOutputParser._section_end in line:
                         break
 
-                    elif GaussianParser._tensor_begin in line: 
+                    elif GaussianOutputParser._tensor_begin in line: 
                         if tensor_block is None:
                             tensor_block = []
                         else:
                             result.insert(
-                                GaussianParser._process_block(
+                                GaussianOutputParser._process_block(
                                     tensor_block
                                 )
                             )
@@ -846,9 +773,6 @@ class CSTVizGUI:
         self.file_list_component(self.file_list_frame)
         self.file_contents_listbox_component(self.file_contents_frame)
         
-
-
-
     def file_list_component(self, parent):
         self.file_listbox = Pmw.ScrolledListBox(parent,
             listbox_height = 8,
@@ -1147,19 +1071,40 @@ class CSTVizGUI:
             
         for f in file_list:
             if not f in self.file_list:
-                self.file_list[f] = TensorList()
+                self.file_list[f] = self.read_file(
+                    f
+                )
                 #print basename(f)
-                self.file_list[f].read(f)
+                #self.file_list[f].read(f)
                 self.file_listbox.insert("end", f)
 
                 self.file_list[f].apply_cgo_settings_gui(
                     self.settings_dict
                 )
 
+    def read_file(
+        self, 
+        filename, 
+        file_type = 'gaussian'
+    ):
+        result = None
+
+        if file_type == 'gaussian':
+            result = GaussianOutputParser.read(filename)
+        else:
+            raise NotImplementedError(
+                "This file format is not (yet) supported by CSTViz"
+            )
+            
+        return result
+        
+
     def reload_file(self):
         try:
             self.clear_all_items()
-            self.file_list[self.selected_file].read(self.selected_file)
+            self.file_list[self.selected_file] = self.read_file(
+                self.selected_file
+            )
             self.file_list[self.selected_file].apply_cgo_settings_gui(
                 self.settings_dict
             )
