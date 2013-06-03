@@ -1668,16 +1668,25 @@ class ComponentColorButtons:
         )
 
         self.color11_button = Tkinter.Button(parent,
-            command = self.get_color11,
+            command = lambda: self.get_color(
+                self.color11, 
+                self.color11_button
+            ),
             bg = self.color11.get_hex_color(),
             width = 10,
         )
         self.color22_button = Tkinter.Button(parent,
-            command = self.get_color22,
+            command = lambda: self.get_color(
+                self.color22, 
+                self.color22_button
+            ),
             bg = self.color22.get_hex_color(),
         )   
         self.color33_button = Tkinter.Button(parent,
-            command = self.get_color33,
+            command = lambda: self.get_color(
+                self.color33, 
+                self.color33_button
+            ),
             bg = self.color33.get_hex_color(),
         )
 
@@ -1694,33 +1703,14 @@ class ComponentColorButtons:
             sticky = 'ew',
         )
 
-    def get_color11(self):
+    def get_color(self, color_class, color_button):
         (rgbTuple, rgbHex) = tkColorChooser.askcolor(
-            self.color11.get_hex_color()
+            color_class.get_hex_color()
         )
         if rgbTuple != None:
-            self.color11.set_color(rgbTuple)
-            self.color11.normalize()
-            self.color11_button.configure(bg = self.color11.get_hex_color())
-
-    def get_color22(self):
-        (rgbTuple, rgbHex) = tkColorChooser.askcolor(
-            self.color22.get_hex_color()
-        )
-        if rgbTuple != None:
-            self.color22.set_color(rgbTuple)
-            self.color22.normalize()
-            self.color22_button.configure(bg = self.color22.get_hex_color())
-
-    def get_color33(self):
-        (rgbTuple, rgbHex) = tkColorChooser.askcolor(
-            self.color33.get_hex_color()
-        )
-        if rgbTuple != None:
-            self.color33.set_color(rgbTuple)
-            self.color33.normalize()
-            self.color33_button.configure(bg = self.color33.get_hex_color())
-
+            color_class.set_color(rgbTuple)
+            color_class.normalize()
+            color_button.configure(bg = color_class.get_hex_color())
 
 
 class CGOColor:
