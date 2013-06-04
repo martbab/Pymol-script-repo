@@ -56,10 +56,11 @@ advice, then by all means let me know.
 ##############################################################################
 from numpy import array, sum, dot
 from numpy.linalg import norm
-from pymol import cmd, stored, CmdException
-from pymol.cgo import *
+#from pymol import cmd, stored, CmdException
+#from pymol.cgo import *
 import inspect
 from copy import deepcopy
+import re
 
 
 # debugging symbol to make developer's life a bit easier
@@ -92,8 +93,9 @@ class SigmaTensor():
     '''
 
     def __init__(self, 
-        nucleus="", 
+        element = "", 
         index = 0, 
+        shield_type = 'total',
         sigma11 = 0.0, 
         sigma22 = 0.0, 
         sigma33 = 0.0,
@@ -103,13 +105,14 @@ class SigmaTensor():
         eig_vec33 = [0.0, 0.0, 0.0]
     ):
 
+        self.shielding_type = shield_type
         self.sigmas = array([sigma11, sigma22, sigma33])
 
         self.eigenvectors = array([eig_vec11, eig_vec22, eig_vec33])
 
         self.origin = array(origin)
 
-        self.nucleus = nucleus
+        self.element = element
         self.index = index 
         self.cgo_width = 0.02
         self.cgo_rel_widths = [ 1.0, 1.0, 1.0 ]
@@ -121,19 +124,21 @@ class SigmaTensor():
         self.draw_pseudo = True
         self.show_pseudo = True
         self.cgo = []
-        self.cgo_name = self.nucleus + repr(self.index)
+        self.cgo_name = self.element + repr(self.index)
         self.pseudo_name = self.cgo_name + "_comp"
 
     def __str__(self):
         '''
         prints out a short summary about the tensor parameters as string
         '''
-        message = "Nucleus: "
-        message += self.nucleus
+        message = "Index: " + repr(self.index) + "\n"
+        message += "Element symbol: "
+        message += self.element
         message += "\n"
-
+        message += "Type of shielding tensor: " + repr(self.shielding_type)
+        message += "\n"
         message += "Eigenvalues: " + repr(self.sigmas) + "\n"
-        message += "Isotropic shielding " + repr(self.sigmas.mean()) + "\n"
+        message += "Isotropic value: " + repr(self.sigmas.mean()) + "\n"
         message += "Eigenvectors: " + repr(self.eigenvectors) + "\n"
         message += "Tensor origin: " + repr(self.origin) + "\n"
         message += "CGO object width: " + repr(self.cgo_width) + "\n"
@@ -201,7 +206,7 @@ class SigmaTensor():
         ]
         if DEBUG:
             print_debug_info("changed settings for item:", 
-                "%s%04d" % (self.nucleus, self.index))
+                "%s%04d" % (self.element, self.index))
             print_debug_info("item settings:", str(self))
 
 
@@ -387,7 +392,7 @@ class TensorList():
         key = ""
         for arg in args:
             if isinstance(arg, SigmaTensor):
-                key = self.__class__._key_format % (arg.nucleus, arg.index)
+                key = self.__class__._key_format % (arg.element, arg.index)
                 self.data[key] = arg
             else:
                 raise TypeError(
@@ -504,7 +509,6 @@ class TensorList():
             if DEBUG:
                 print_debug_info("applied CGO settings to item: ", d)
 
-
     def apply_cgo_settings_gui(self, settings, items = []):
         '''apply graphical settings to the items specified by the array
         of keys. When the array is empty the method will alter the CGO 
@@ -549,7 +553,7 @@ class GaussianOutputParser(object):
     ):
         result = SigmaTensor()
         result.index = int(block[0][0])
-        result.nucleus = block[0][1]
+        result.element = block[0][1]
 
         if (block[4][0] == GaussianOutputParser._eigenvalues
             and
@@ -605,6 +609,136 @@ class GaussianOutputParser(object):
                     )
 
         return result
+
+
+class ADFOutputParser(object):
+    _nucleus_blk_begin = "****  N U C L E U S : "
+    _nucleus_blk_end = "*" * 80
+    _atom_inp_number = "Atom input number in the ADF calculation:"
+    _shielding_types = {
+        'total' : "TOTAL NMR SHIELDING TENSOR",
+        'spin-orbit' : "SPIN-ORBIT NMR SHIELDING TENSORS",
+        'diamagnetic' : "DIAMAGNETIC NMR SHIELDING TENSORS",
+        'paramagnetic' : "PARAMAGNETIC NMR SHIELDING TENSORS"
+    }
+    _principal_axis_rep = "PRINCIPAL AXIS REPRESENTATION"
+    _principal_components = "==== Principal components:"
+    _pas = "==== Principal axis system:"
+    _principal_end = "-" * 35
+    _atom_number_regexp = re.compile(
+        r'\s*(?P<elem>[A-Za-z]{1,2})\((?P<index>\d+)\)\s*'
+    )
+
+    @staticmethod
+    def process_block(
+        block,
+        shield_type = 'total'
+    ):
+        result = SigmaTensor()
+
+        (result.index, result.element) = ADFOutputParser.parse_element_index(
+            block[0][1]
+        )
+        result.shielding_type= shield_type
+
+        result.sigmas = array(
+            map(
+                float,
+                block[1][0:4]
+            )
+        )
+            
+        principal_axes = array(
+            [
+                map(float, i)
+                for i in block[3:7]
+            ]
+        )
+
+        result.eigenvectors = principal_axes.T
+
+        return result
+
+    @staticmethod
+    def parse_element_index(
+        arg
+    ):
+        match = ADFOutputParser._atom_number_regexp.match(arg)
+
+        if match:
+            return (
+                int(match.group('index')), 
+                match.group('elem')
+            )
+        else:
+            raise TypeError("Invalid format for parsing")
+
+    @staticmethod
+    def read(
+        filename,
+        shield_type = 'total'
+    ):
+        tensor_found = False
+        principal_found = False
+        type_found = False
+
+        tensor_block = None
+        block_type = ""
+        result = TensorList()
+        
+        if shield_type in ADFOutputParser._shielding_types:
+            block_type = ADFOutputParser._shielding_types[shield_type]
+            result.shielding_type = shield_type
+        else:
+            raise TypeError(
+                "Unrecognized shielding type: %s" % shield_type
+            )
+
+        with open(filename, 'r') as f:
+            for line in f:
+                if ADFOutputParser._nucleus_blk_begin in line:
+                    tensor_found = True
+                    tensor_block = []
+
+                if tensor_found:
+                    if ADFOutputParser._nucleus_blk_end in line:
+                        result.insert(
+                            ADFOutputParser.process_block(
+                                tensor_block,
+                                shield_type = shield_type
+                            ) 
+                        )
+                        #print tensor_block
+                        tensor_block = []
+                        tensor_found = False
+                        continue
+
+                    elif ADFOutputParser._atom_inp_number in line:
+                        tensor_block.append(
+                            line.strip().split(':')
+                        )
+
+                    elif block_type in line:
+                        type_found = True
+                        continue
+
+                    elif (
+                        ADFOutputParser._principal_components in line
+                        and
+                        type_found
+                    ):
+                        principal_found = True
+
+                    elif principal_found:
+                        if ADFOutputParser._principal_end in line:
+                            principal_found = False
+                            type_found = False
+                        elif len(line.strip()) != 0:
+                            tensor_block.append(
+                                line.strip().split()  
+                            )
+
+            return result
 
 
 ##############################################################################
@@ -1887,20 +2021,20 @@ def drawcst(
 
     tensors.redraw_items()
 
-cmd.extend("drawcst", drawcst)
+#cmd.extend("drawcst", drawcst)
 
 #############################################################################
 #
 # initialization of the plugin, adding it to the PyMOL > Plugin dir
 #############################################################################
 
-def __init__(self):
-    """
-    Adds CSTViz GUI to the Plugins menu.
-    """
-    self.menuBar.addmenuitem('Plugin',
-        'command',
-        'CST vizualization plugin',
-        label = 'CSTViz',
-        command = lambda s=self: CSTVizGUI(s)
-    )
+#def __init__(self):
+#   """
+#   Adds CSTViz GUI to the Plugins menu.
+#   """
+#   self.menuBar.addmenuitem('Plugin',
+#       'command',
+#       'CST vizualization plugin',
+#       label = 'CSTViz',
+#       command = lambda s=self: CSTVizGUI(s)
+#   )
