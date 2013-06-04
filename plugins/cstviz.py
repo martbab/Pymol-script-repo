@@ -56,8 +56,8 @@ advice, then by all means let me know.
 ##############################################################################
 from numpy import array, sum, dot
 from numpy.linalg import norm
-#from pymol import cmd, stored, CmdException
-#from pymol.cgo import *
+from pymol import cmd, stored, CmdException
+from pymol.cgo import *
 import inspect
 from copy import deepcopy
 import re
@@ -381,6 +381,8 @@ class TensorList():
         self.data = {}
         # the name of the file the data are from
         self.filename = ""
+        # type of the file the data are from, set from GUI
+        self.file_type = ""
         # PyMOL selection for data filtering
         self.selection = "all"
         # custom name for PyMOL selection
@@ -541,7 +543,6 @@ class GaussianOutputParser(object):
     _tensor_begin = "Isotropic ="
     _eigenvalues  = "Eigenvalues:"
     _eigenvectors = "Eigenvectors:"
-    _shielding_types = {'total' : None}
 
     def __init__(
         self,
@@ -576,7 +577,8 @@ class GaussianOutputParser(object):
 
     @staticmethod
     def read(
-        filename
+        filename,
+        shield_type = 'total'
     ):
         section_found = False
 
@@ -616,6 +618,7 @@ class ADFOutputParser(object):
     _nucleus_blk_begin = "****  N U C L E U S : "
     _nucleus_blk_end = "*" * 80
     _atom_inp_number = "Atom input number in the ADF calculation:"
+    _atom_internal_number = "Internal NMR numbering of atoms:"
     _shielding_types = {
         'total' : "TOTAL NMR SHIELDING TENSOR",
         'spin-orbit' : "SPIN-ORBIT NMR SHIELDING TENSORS",
@@ -714,7 +717,7 @@ class ADFOutputParser(object):
                         tensor_found = False
                         continue
 
-                    elif ADFOutputParser._atom_inp_number in line:
+                    elif ADFOutputParser._atom_internal_number in line:
                         tensor_block.append(
                             line.strip().split(':')
                         )
@@ -792,10 +795,12 @@ class CSTVizGUI:
             'color33' : self.color33
         }
 
-        self.file_formats = {
-            'gaussian' : GaussianOutputParser,
-            'adf' : ADFOutputParser
+        self.file_types_dict = {
+            'Gaussian 0X (03-09) log file' : GaussianOutputParser,
+            'ADF NMR module output' : ADFOutputParser
         }
+        self.default_file_type = 'Gaussian 0X (03-09) log file'
+        self.default_shield_type = 'total'
 
         self.selected_file = ""
 
@@ -1197,17 +1202,22 @@ class CSTVizGUI:
     def open_file(self):
         file_open_dialog = PmwFileDialog(
             parent = self.file_list_frame,
-            title = "Choose a NMR calculation output"
+            title = "Choose a NMR calculation output",
+            file_types = self.file_types_dict,
+            default_file_type = self.default_file_type,
+            default_shield_type = self.default_shield_type,
         )
 
-        file_to_open = file_open_dialog.askfilename()
+        (file_to_open, file_type, shield_type) = file_open_dialog.askfilename()
 
         if file_to_open is None or file_to_open == '':
             return
         
         if not file_to_open in self.file_list:
             self.file_list[file_to_open] = self.read_file(
-                file_to_open
+                file_to_open,
+                file_type = file_type,
+                shield_type = shield_type
             )
             #print basename(f)
             #self.file_list[f].read(f)
@@ -1220,25 +1230,32 @@ class CSTVizGUI:
     def read_file(
         self, 
         filename, 
-        file_type = 'gaussian'
+        file_type,
+        shield_type
     ):
         result = None
-
-        if file_type == 'gaussian':
-            result = GaussianOutputParser.read(filename)
+        if file_type in self.file_types_dict:
+            result = self.file_types_dict[file_type].read(
+                filename,
+                shield_type = shield_type
+            )
+            result.filename = filename
+            result.file_type = file_type
+            result.shielding_type = shield_type
         else:
             raise NotImplementedError(
-                "This file format is not (yet) supported by CSTViz"
+                "This file type is not yet supported by CSTViz"
             )
-            
-        return result
-        
+
+        return result 
 
     def reload_file(self):
         try:
             self.clear_all_items()
             self.file_list[self.selected_file] = self.read_file(
-                self.selected_file
+                self.selected_file,
+                self.file_list[self.selected_file].file_type,
+                self.file_list[self.selected_file].shielding_type,
             )
             self.file_list[self.selected_file].apply_cgo_settings_gui(
                 self.settings_dict
@@ -1260,7 +1277,9 @@ class CSTVizGUI:
         self.selected_items = self.file_contents_listbox.getcurselection()
 
     def choose_pymol_sele(self):
-        selections = cmd.get_names('all')
+        selections = [
+            i for i in cmd.get_names('all') if i[0] != "_"
+        ]
 
         self.filter_sele_combobox = Pmw.ComboBoxDialog(self.top.interior(),
             title = 'filter data by molecule/selection',
@@ -1867,18 +1886,22 @@ class PmwFileDialog(Pmw.Dialog):
     """File Dialog using Pmw"""
     def __init__(self, parent = None, **kw):
         # Define the megawidget options.
+        self.file_type_dict = kw['file_types']
+        self.default_file_type = kw['default_file_type']
+        self.default_shield_type = kw['default_shield_type']
         optiondefs = (
             ('filter',    '*',              self.newfilter),
             ('directory', os.getcwd(),      self.newdir),
             ('filename',  '',               self.newfilename),
             ('historylen',10,               None),
             ('command',   None,             None),
-                ('info',      None,             None),
+            ('info',      None,             None),
+            ('filetype',  self.default_file_type, self.new_file_type),
+            ('shieldtype', self.default_shield_type, self.new_shield_type),
 	    )
         self.defineoptions(kw, optiondefs)
         # Initialise base class (after defining options).
         Pmw.Dialog.__init__(self, parent)
-
         self.withdraw()
 
         # Create the components.
@@ -1905,16 +1928,21 @@ class PmwFileDialog(Pmw.Dialog):
         fnb.grid(row=1+rowoffset,column=1,sticky='news',padx=3,pady=3)
         del fnb
 
-        # Create the filter entry
-        ft = self.mkft()
-        ft.grid(row=2+rowoffset,column=0,columnspan=2,padx=3,pady=3)
-        del ft
-
         # Create the filename entry
         fn = self.mkfn()
-        fn.grid(row=3+rowoffset,column=0,columnspan=2,padx=3,pady=3)
+        fn.grid(row=2+rowoffset,column=0,columnspan=2,padx=3,pady=3)
         fn.bind('<Return>',self.okbutton)
         del fn
+
+        # Create the filetype selector
+        ft = self.make_file_type()
+        ft.grid(row=3+rowoffset,column=0,columnspan=2,padx=3,pady=3)
+        del ft
+
+        # Create shielding tensor type selector
+        st = self.make_shield_type()
+        st.grid(row=4+rowoffset,column=0,columnspan=2,padx=3,pady=3)
+        del st
 
         # Buttonbox already exists
         bb=self.component('buttonbox')
@@ -1923,7 +1951,7 @@ class PmwFileDialog(Pmw.Dialog):
         del bb
 
         Pmw.alignlabels([self.component('filename'),
-            self.component('filter'),
+            self.component('filetype'),
 			self.component('dirname')])
 
     def infotxt(self):
@@ -1974,6 +2002,33 @@ class PmwFileDialog(Pmw.Dialog):
 	    selectioncommand=self.setfilter,
 	    labelpos='w',
 	    label_text='Filter:')
+
+    def make_file_type(self):
+        return self.createcomponent(
+            'filetype',
+            (), None,
+            Pmw.ComboBox, (self.interior(),),
+            entryfield_value=self.default_file_type,
+            entryfield_entry_width=40,
+            selectioncommand=self.set_file_type,
+            labelpos='w',
+            label_text='File type:',
+            scrolledlist_items = self.file_type_dict
+        )
+
+    def make_shield_type(self):
+        return self.createcomponent(
+            'shieldtype',
+            (), None,
+            Pmw.ComboBox, (self.interior(),),
+            entryfield_value=self.default_shield_type,
+            entryfield_entry_width=40,
+            selectioncommand=self.set_shield_type,
+            labelpos='w',
+            label_text='Shielding type:',
+            scrolledlist_items = (self.default_shield_type,)
+        )
+
 
     def mkfnb(self):
         """Make filename list box"""
@@ -2072,6 +2127,28 @@ class PmwFileDialog(Pmw.Dialog):
         self.tidy(self.component('filter'),self['filter'])
         self.fillit()
 
+    def new_file_type(self):
+        self.tidy(self.component('filetype'), self['filetype'])
+
+
+    def set_file_type(self, value):
+        self.configure(filetype = value)
+
+        if hasattr(self.file_type_dict[value], '_shielding_types'):
+            self.component('shieldtype').setlist(
+                sorted(self.file_type_dict[value]._shielding_types)
+            )
+        else:
+            self.component('shieldtype').setlist(
+                (self.default_shield_type,)
+            )
+            
+    def new_shield_type(self):
+        self.tidy(self.component('shieldtype'), self['shieldtype'])
+
+    def set_shield_type(self, value):
+        self.configure(shieldtype = value)
+
     def setdir(self,value):
         self.configure(directory=value)
 
@@ -2126,7 +2203,13 @@ class PmwFileDialog(Pmw.Dialog):
         if self.canceled:
             return None
         else:
-            return self.component('filename').get()
+            # return filename, filetype and optionally shielding type as
+            # a tuple
+            return (
+                self.component('filename').get(),
+                self.component('filetype').get(),
+                self.component('shieldtype').get(),
+            )
 
     lastdir=""
     lastfilter=None
@@ -2359,20 +2442,20 @@ def drawcst(
 
     tensors.redraw_items()
 
-#cmd.extend("drawcst", drawcst)
+cmd.extend("drawcst", drawcst)
 
 #############################################################################
 #
 # initialization of the plugin, adding it to the PyMOL > Plugin dir
 #############################################################################
 
-#def __init__(self):
-#  """
-#  Adds CSTViz GUI to the Plugins menu.
-#  """
-#  self.menuBar.addmenuitem('Plugin',
-#      'command',
-#      'CST vizualization plugin',
-#      label = 'CSTViz',
-#      command = lambda s=self: CSTVizGUI(s)
-#  )
+def __init__(self):
+   """
+   Adds CSTViz GUI to the Plugins menu.
+   """
+   self.menuBar.addmenuitem('Plugin',
+       'command',
+       'CST vizualization plugin',
+       label = 'CSTViz',
+       command = lambda s=self: CSTVizGUI(s)
+   )
