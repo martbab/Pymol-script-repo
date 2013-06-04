@@ -541,6 +541,7 @@ class GaussianOutputParser(object):
     _tensor_begin = "Isotropic ="
     _eigenvalues  = "Eigenvalues:"
     _eigenvectors = "Eigenvectors:"
+    _shielding_types = {'total' : None}
 
     def __init__(
         self,
@@ -789,6 +790,11 @@ class CSTVizGUI:
             'color11' : self.color11,
             'color22' : self.color22,
             'color33' : self.color33
+        }
+
+        self.file_formats = {
+            'gaussian' : GaussianOutputParser,
+            'adf' : ADFOutputParser
         }
 
         self.selected_file = ""
@@ -1189,32 +1195,27 @@ class CSTVizGUI:
             pass
 
     def open_file(self):
-        files = tkFileDialog.askopenfilenames(
+        file_open_dialog = PmwFileDialog(
             parent = self.file_list_frame,
-            title = "Choose a Gaussian output"
+            title = "Choose a NMR calculation output"
         )
-        file_list = []
-        
-        # the following lines address the issue #5712 in Tkinter module
-        # on Windows OS. The askopenfilenames method returns a string instead
-        # of a tuple, so we have to split it to several filenames manually
-        if type(files) is not tuple:
-            file_list = self.parent.tk.splitlist(files)
-        else:
-            file_list = files
-            
-        for f in file_list:
-            if not f in self.file_list:
-                self.file_list[f] = self.read_file(
-                    f
-                )
-                #print basename(f)
-                #self.file_list[f].read(f)
-                self.file_listbox.insert("end", f)
 
-                self.file_list[f].apply_cgo_settings_gui(
-                    self.settings_dict
-                )
+        file_to_open = file_open_dialog.askfilename()
+
+        if file_to_open is None or file_to_open == '':
+            return
+        
+        if not file_to_open in self.file_list:
+            self.file_list[file_to_open] = self.read_file(
+                file_to_open
+            )
+            #print basename(f)
+            #self.file_list[f].read(f)
+            self.file_listbox.insert("end", file_to_open)
+
+            self.file_list[file_to_open].apply_cgo_settings_gui(
+                self.settings_dict
+            )
 
     def read_file(
         self, 
@@ -1831,6 +1832,343 @@ class CGOColor:
 
 
             self.rgb_to_hex()
+#
+# The classes PmwFileDialog and PmwExistingFileDialog and the _errorpop function
+# are taken from the Pmw contrib directory.  The attribution given in that file
+# is:
+################################################################################
+# Filename dialogs using Pmw
+#
+# (C) Rob W.W. Hooft, Nonius BV, 1998
+#
+# Modifications:
+#
+# J. Willem M. Nissink, Cambridge Crystallographic Data Centre, 8/2002
+#    Added optional information pane at top of dialog; if option
+#    'info' is specified, the text given will be shown (in blue).
+#    Modified example to show both file and directory-type dialog
+#
+# No Guarantees. Distribute Freely.
+# Please send bug-fixes/patches/features to <r.hooft@euromail.com>
+#
+################################################################################
+import os,fnmatch,time
+
+def _errorpop(master,text):
+    d=Pmw.MessageDialog(master,
+                        title="Error",
+                        message_text=text,
+                        buttons=("OK",))
+    d.component('message').pack(ipadx=15,ipady=15)
+    d.activate()
+    d.destroy()
+
+class PmwFileDialog(Pmw.Dialog):
+    """File Dialog using Pmw"""
+    def __init__(self, parent = None, **kw):
+        # Define the megawidget options.
+        optiondefs = (
+            ('filter',    '*',              self.newfilter),
+            ('directory', os.getcwd(),      self.newdir),
+            ('filename',  '',               self.newfilename),
+            ('historylen',10,               None),
+            ('command',   None,             None),
+                ('info',      None,             None),
+	    )
+        self.defineoptions(kw, optiondefs)
+        # Initialise base class (after defining options).
+        Pmw.Dialog.__init__(self, parent)
+
+        self.withdraw()
+
+        # Create the components.
+        interior = self.interior()
+
+        if self['info'] is not None:
+            rowoffset=1
+            dn = self.infotxt()
+            dn.grid(row=0,column=0,columnspan=2,padx=3,pady=3)
+        else:
+            rowoffset=0
+
+        dn = self.mkdn()
+        dn.grid(row=0+rowoffset,column=0,columnspan=2,padx=3,pady=3)
+        del dn
+
+        # Create the directory list component.
+        dnb = self.mkdnb()
+        dnb.grid(row=1+rowoffset,column=0,sticky='news',padx=3,pady=3)
+        del dnb
+
+        # Create the filename list component.
+        fnb = self.mkfnb()
+        fnb.grid(row=1+rowoffset,column=1,sticky='news',padx=3,pady=3)
+        del fnb
+
+        # Create the filter entry
+        ft = self.mkft()
+        ft.grid(row=2+rowoffset,column=0,columnspan=2,padx=3,pady=3)
+        del ft
+
+        # Create the filename entry
+        fn = self.mkfn()
+        fn.grid(row=3+rowoffset,column=0,columnspan=2,padx=3,pady=3)
+        fn.bind('<Return>',self.okbutton)
+        del fn
+
+        # Buttonbox already exists
+        bb=self.component('buttonbox')
+        bb.add('OK',command=self.okbutton)
+        bb.add('Cancel',command=self.cancelbutton)
+        del bb
+
+        Pmw.alignlabels([self.component('filename'),
+            self.component('filter'),
+			self.component('dirname')])
+
+    def infotxt(self):
+        """ Make information block component at the top """
+        return self.createcomponent(
+                'infobox',
+                (), None,
+                Tkinter.Label, (self.interior(),),
+                width=51,
+                relief='groove',
+                foreground='darkblue',
+                justify='left',
+                text=self['info']
+            )
+
+    def mkdn(self):
+        """Make directory name component"""
+        return self.createcomponent(
+	    'dirname',
+	    (), None,
+	    Pmw.ComboBox, (self.interior(),),
+	    entryfield_value=self['directory'],
+	    entryfield_entry_width=40,
+            entryfield_validate=self.dirvalidate,
+	    selectioncommand=self.setdir,
+	    labelpos='w',
+	    label_text='Directory:')
+
+    def mkdnb(self):
+        """Make directory name box"""
+        return self.createcomponent(
+	    'dirnamebox',
+	    (), None,
+	    Pmw.ScrolledListBox, (self.interior(),),
+	    label_text='directories',
+	    labelpos='n',
+	    hscrollmode='none',
+	    dblclickcommand=self.selectdir)
+
+    def mkft(self):
+        """Make filter"""
+        return self.createcomponent(
+	    'filter',
+	    (), None,
+	    Pmw.ComboBox, (self.interior(),),
+	    entryfield_value=self['filter'],
+	    entryfield_entry_width=40,
+	    selectioncommand=self.setfilter,
+	    labelpos='w',
+	    label_text='Filter:')
+
+    def mkfnb(self):
+        """Make filename list box"""
+        return self.createcomponent(
+	    'filenamebox',
+	    (), None,
+	    Pmw.ScrolledListBox, (self.interior(),),
+	    label_text='files',
+	    labelpos='n',
+	    hscrollmode='none',
+	    selectioncommand=self.singleselectfile,
+	    dblclickcommand=self.selectfile)
+
+    def mkfn(self):
+        """Make file name entry"""
+        return self.createcomponent(
+	    'filename',
+	    (), None,
+	    Pmw.ComboBox, (self.interior(),),
+	    entryfield_value=self['filename'],
+	    entryfield_entry_width=40,
+            entryfield_validate=self.filevalidate,
+	    selectioncommand=self.setfilename,
+	    labelpos='w',
+	    label_text='Filename:')
+
+    def dirvalidate(self,string):
+        if os.path.isdir(string):
+            return Pmw.OK
+        else:
+            return Pmw.PARTIAL
+
+    def filevalidate(self,string):
+        if string=='':
+            return Pmw.PARTIAL
+        elif os.path.isfile(string):
+            return Pmw.OK
+        elif os.path.exists(string):
+            return Pmw.PARTIAL
+        else:
+            return Pmw.OK
+
+    def okbutton(self):
+        """OK action: user thinks he has input valid data and wants to
+               proceed. This is also called by <Return> in the filename entry"""
+        fn=self.component('filename').get()
+        self.setfilename(fn)
+        if self.validate(fn):
+            self.canceled=0
+            self.deactivate()
+
+    def cancelbutton(self):
+        """Cancel the operation"""
+        self.canceled=1
+        self.deactivate()
+
+    def tidy(self,w,v):
+        """Insert text v into the entry and at the top of the list of
+           the combobox w, remove duplicates"""
+        if not v:
+            return
+        entry=w.component('entry')
+        entry.delete(0,'end')
+        entry.insert(0,v)
+        list=w.component('scrolledlist')
+        list.insert(0,v)
+        index=1
+        while index<list.index('end'):
+            k=list.get(index)
+            if k==v or index>self['historylen']:
+                list.delete(index)
+            else:
+                index=index+1
+        w.checkentry()
+
+    def setfilename(self,value):
+        if not value:
+            return
+        value=os.path.join(self['directory'],value)
+        dir,fil=os.path.split(value)
+        self.configure(directory=dir,filename=value)
+
+        c=self['command']
+        if callable(c):
+            c()
+
+    def newfilename(self):
+        """Make sure a newly set filename makes it into the combobox list"""
+        self.tidy(self.component('filename'),self['filename'])
+
+    def setfilter(self,value):
+        self.configure(filter=value)
+
+    def newfilter(self):
+        """Make sure a newly set filter makes it into the combobox list"""
+        self.tidy(self.component('filter'),self['filter'])
+        self.fillit()
+
+    def setdir(self,value):
+        self.configure(directory=value)
+
+    def newdir(self):
+        """Make sure a newly set dirname makes it into the combobox list"""
+        self.tidy(self.component('dirname'),self['directory'])
+        self.fillit()
+
+    def singleselectfile(self):
+        """Single click in file listbox. Move file to "filename" combobox"""
+        cs=self.component('filenamebox').curselection()
+        if cs!=():
+            value=self.component('filenamebox').get(cs)
+            self.setfilename(value)
+
+    def selectfile(self):
+        """Take the selected file from the filename, normalize it, and OK"""
+        self.singleselectfile()
+        value=self.component('filename').get()
+        self.setfilename(value)
+        if value:
+            self.okbutton()
+
+    def selectdir(self):
+        """Take selected directory from the dirnamebox into the dirname"""
+        cs=self.component('dirnamebox').curselection()
+        if cs!=():
+            value=self.component('dirnamebox').get(cs)
+            dir=self['directory']
+            if not dir:
+                dir=os.getcwd()
+            if value:
+                if value=='..':
+                    dir=os.path.split(dir)[0]
+                else:
+                    dir=os.path.join(dir,value)
+            self.configure(directory=dir)
+            self.fillit()
+
+    def askfilename(self,directory=None,filter=None):
+        """The actual client function. Activates the dialog, and
+           returns only after a valid filename has been entered
+               (return value is that filename) or when canceled (return
+               value is None)"""
+        if directory!=None:
+            self.configure(directory=directory)
+        if filter!=None:
+            self.configure(filter=filter)
+        self.fillit()
+        self.canceled=1 # Needed for when user kills dialog window
+        self.activate()
+        if self.canceled:
+            return None
+        else:
+            return self.component('filename').get()
+
+    lastdir=""
+    lastfilter=None
+    lasttime=0
+    def fillit(self):
+        """Get the directory list and show it in the two listboxes"""
+        # Do not run unnecesarily
+        if self.lastdir==self['directory'] and self.lastfilter==self['filter'] and self.lasttime>os.stat(self.lastdir)[8]:
+            return
+        self.lastdir=self['directory']
+        self.lastfilter=self['filter']
+        self.lasttime=time.time()
+        dir=self['directory']
+        if not dir:
+            dir=os.getcwd()
+        dirs=['..']
+        files=[]
+        try:
+            fl=os.listdir(dir)
+            fl.sort()
+        except os.error,arg:
+            if arg[0] in (2,20):
+                return
+            raise
+        for f in fl:
+            if os.path.isdir(os.path.join(dir,f)):
+                dirs.append(f)
+            else:
+                filter=self['filter']
+                if not filter:
+                    filter='*'
+                if fnmatch.fnmatch(f,filter):
+                    files.append(f)
+        self.component('filenamebox').setlist(files)
+        self.component('dirnamebox').setlist(dirs)
+
+    def validate(self,filename):
+        """Validation function. Should return 1 if the filename is valid,
+               0 if invalid. May pop up dialogs to tell user why. Especially
+               suited to subclasses: i.e. only return 1 if the file does/doesn't
+               exist"""
+        return 1
 
 ##############################################################################    
 #
@@ -2029,12 +2367,12 @@ def drawcst(
 #############################################################################
 
 #def __init__(self):
-#   """
-#   Adds CSTViz GUI to the Plugins menu.
-#   """
-#   self.menuBar.addmenuitem('Plugin',
-#       'command',
-#       'CST vizualization plugin',
-#       label = 'CSTViz',
-#       command = lambda s=self: CSTVizGUI(s)
-#   )
+#  """
+#  Adds CSTViz GUI to the Plugins menu.
+#  """
+#  self.menuBar.addmenuitem('Plugin',
+#      'command',
+#      'CST vizualization plugin',
+#      label = 'CSTViz',
+#      command = lambda s=self: CSTVizGUI(s)
+#  )
